@@ -436,10 +436,62 @@
     letter-spacing: 0.1em;
   }
   a { color: #4a3f2a; }
+  /* Dark mode: auto based on local time via JS */
+  body.night {
+    --paper: #1a1712;
+    --ink: #e8e0cc;
+    --faint: #a39a86;
+    --rule: #4a4238;
+  }
+  body.night {
+    background: #0f0d0a;
+  }
+  body.night .page {
+    background: var(--paper);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+  }
+  body.night a { color: #c9b896; }
+  body.night .postit {
+    background: #fff9c4;
+    color: #3a3a20;
+  }
+  .live-clock {
+    position: absolute;
+    top: 0.5rem;
+    right: 1rem;
+    font-size: 0.75rem;
+    font-variant: small-caps;
+    letter-spacing: 0.1em;
+    color: var(--faint);
+  }
 </style>
+<script>
+// Live clock + auto dark/light based on local time
+(function() {
+  function updateClock() {
+    var now = new Date();
+    var el = document.getElementById('live-clock');
+    if (el) {
+      el.textContent = now.toLocaleTimeString([], {
+        hour: '2-digit', minute: '2-digit', second: '2-digit'
+      });
+    }
+    // Night mode: 7pm to 7am local time
+    var hour = now.getHours();
+    if (hour >= 19 || hour < 7) {
+      document.body.classList.add('night');
+    } else {
+      document.body.classList.remove('night');
+    }
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+})();
+</script>
 </head>
 <body>
 <div class="page">
+  <div class="live-clock" id="live-clock"></div>
   <header class="masthead">
     <div class="kicker">{{KICKER}}</div>
     <h1>The Daily Commit</h1>

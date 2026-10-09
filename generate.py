@@ -39,6 +39,7 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -245,8 +246,10 @@ def fetch_merged_prs(repo, md):
             continue
         merged.append({
             "year": year_of(pr["merged_at"]),
-            "headline": "#%s %s" % (pr.get("number"),
-                                    first_line(pr.get("title"))),
+            "headline": "#%s %s (%s \u2192 %s)" % (
+                pr.get("number"), first_line(pr.get("title")),
+                ((pr.get("head") or {}).get("ref")) or "?",
+                ((pr.get("base") or {}).get("ref")) or "?"),
             "byline": (pr.get("user") or {}).get("login") or "unknown",
             "body": first_line(pr.get("body")),
             "url": pr.get("html_url", ""),
@@ -349,23 +352,40 @@ def author_commits(user, md, years):
                 "byline": "%s · %s" % (user, repo),
                 "body": hit.get("sha", "")[:7],
                 "url": hit.get("html_url", ""),
+                "login": user,
             })
     return found
 
 
-def author_issue_item(hit, stamp, user, kind):
+def author_issue_item(hit, stamp, user, kind, head="?", base="?"):
     """One issue/PR search hit as a newspaper item."""
     repo_url = hit.get("repository_url", "").rstrip("/")
     repo = "/".join(repo_url.split("/")[-2:]) or "?"
+    if kind == "PR":
+        headline = "PR #%s %s (%s \u2192 %s)" % (
+            hit.get("number"), first_line(hit.get("title")), head, base)
+    else:
+        headline = "%s #%s %s" % (kind, hit.get("number"),
+                                  first_line(hit.get("title")))
     return {
         "year": year_of(stamp),
-        "headline": "%s #%s %s" % (kind, hit.get("number"),
-                                   first_line(hit.get("title"))),
+        "headline": headline,
         "byline": "%s · %s" % (user, repo),
         "body": first_line(hit.get("body")),
         "url": hit.get("html_url", ""),
         "comments": hit.get("comments", 0),
     }
+
+
+def pr_branches(owner, repo, number):
+    """(head, base) branch names for a PR, ("?", "?") on failure."""
+    try:
+        pr = api_get("/repos/%s/%s/pulls/%s" % (owner, repo, number))
+    except urllib.error.HTTPError:
+        return "?", "?"
+    head = ((pr.get("head") or {}).get("ref")) or "?"
+    base = ((pr.get("base") or {}).get("ref")) or "?"
+    return head, base
 
 
 def repo_parts(hit):
@@ -389,8 +409,13 @@ def author_issues(user, md, years):
             if month_day(hit.get("created_at")) != md:
                 continue
             if "pull_request" in hit:
+                owner, repo = repo_parts(hit)
+                if owner:
+                    head, base = pr_branches(owner, repo, hit.get("number"))
+                else:
+                    head, base = "?", "?"
                 prs_opened.append(author_issue_item(hit, hit.get("created_at"),
-                                                   user, "PR"))
+                                                   user, "PR", head, base))
             else:
                 opened.append(author_issue_item(hit, hit.get("created_at"),
                                                user, "Issue"))
@@ -408,8 +433,10 @@ def author_issues(user, md, years):
             except urllib.error.HTTPError:
                 continue
             if month_day(pr.get("merged_at")) == md:
+                head = ((pr.get("head") or {}).get("ref")) or "?"
+                base = ((pr.get("base") or {}).get("ref")) or "?"
                 merged.append(author_issue_item(hit, pr.get("merged_at"),
-                                               user, "PR"))
+                                               user, "PR", head, base))
         for hit in search_paged(
                 "/search/issues",
                 "author:%s updated:%s type:issue" % (user, day)):
@@ -594,6 +621,54 @@ def pullquote(quote):
     ) % (esc(quote["text"]), esc(quote["author"]))
 
 
+MERGE_PR_RE = re.compile(r"^Merge pull request #(\d+) from (\S+)")
+MERGE_BRANCH_RE = re.compile(r"^Merge branch '([^']+)'( into (\S+))?")
+
+
+def find_merges(commits):
+    """Merge commits as drama: whose branch landed, and where.
+
+    A merge from another author's fork is flagged cross-author; a
+    direct merge into main or master gets called out. Needs the
+    commit item's "login" field for the cross-author check.
+    """
+    found = []
+    for item in commits:
+        msg = item["headline"]
+        note = ""
+        match = MERGE_PR_RE.match(msg)
+        if match:
+            source = match.group(2)
+            owner = None
+            for sep in (":", "/"):
+                if sep in source:
+                    owner = source.split(sep)[0]
+                    break
+            merger = item.get("login", "")
+            if owner and merger and owner.lower() != merger.lower():
+                note = ("Cross-author merge: %s merged @%s's branch."
+                        % (merger, owner))
+            else:
+                note = "Merged branch %s." % source
+        else:
+            match = MERGE_BRANCH_RE.match(msg)
+            if not match:
+                continue
+            target = match.group(3) or ""
+            if target in ("main", "master"):
+                note = "Straight into %s." % target
+            else:
+                note = "Merged branch '%s'." % match.group(1)
+        found.append({
+            "year": item["year"],
+            "headline": msg,
+            "byline": item["byline"],
+            "body": note,
+            "url": item["url"],
+        })
+    return found
+
+
 def hottest_threads(opened, closed, limit=5, minimum=5):
     """The day's most-commented issues, deduped and hottest first."""
     seen = {}
@@ -628,6 +703,9 @@ def build_lede(repo, md_long, counts, years):
     if counts.get("merged"):
         bits.append("%d pull request%s merged" % (
             counts["merged"], "" if counts["merged"] == 1 else "s"))
+    if counts.get("merges"):
+        bits.append("%d merge%s" % (counts["merges"],
+                                    "" if counts["merges"] == 1 else "s"))
     if counts.get("releases"):
         bits.append("%d release%s" % (counts["releases"],
                                       "" if counts["releases"] == 1 else "s"))
@@ -788,10 +866,13 @@ def gather_author(user, md):
     drama = (find_reverts(commits)
              + hottest_threads(opened + prs_opened, closed))
     counts["drama"] = len(drama)
+    merges = find_merges(commits)
+    counts["merges"] = len(merges)
     quote = find_quote(commits, comments)
     body = "\n".join([
         pullquote(quote),
         section("Scandals & Corrections", drama),
+        section("Merges", merges),
         section("From the Commit Ledger", commits),
         section("Issues Opened", opened),
         section("Pull Requests Opened", prs_opened),

@@ -77,6 +77,13 @@ than the REST API, so it pauses a few seconds between searches. Setting
 a token (see below) raises the limits. Releases and tags have no global
 search, so they appear in repository mode only.
 
+A "Merges" section flags the user's merge commits: cross-author merges
+(the user merging another author's branch) are called out, as are
+direct merges into main or master. Pull request headlines show their
+`head → base` branches. Branch creation and deletion dates are not
+available: GitHub keeps no historical branch record beyond 90 days of
+events.
+
 ## Options
 
 | Flag            | Effect                                              |
@@ -125,8 +132,11 @@ User mode (`--author`) instead uses the commit and issue search APIs:
 for opened issues and PRs, `author:` plus `updated:` filtered by close
 date for closed issues, one pulls-API read per candidate for merged PRs
 (the issue search carries no merge date), and `commenter:` plus
-`updated:` for the user's own comments. Search calls are paced a few
-seconds apart for the search API's stricter rate limits.
+`updated:` for the user's own comments. Merge commits are detected from
+their messages ("Merge pull request #N from ...", "Merge branch 'x' into
+main") and reported in a dedicated section, with cross-author merges
+flagged. Search calls are paced a few seconds apart for the search API's
+stricter rate limits.
 
 `template.html` holds the newspaper layout and CSS. `generate.py` fills in
 the title, dateline, lede paragraph, and article sections. All repository

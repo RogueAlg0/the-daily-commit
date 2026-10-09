@@ -33,6 +33,10 @@ for offset in -1 0 1; do
 done
 printf '{"dates": [%s]}\n' "$(echo "$DATES" | sed 's/,$//')" \
   > "$SITE/daily/latest.json"
+# shields.io endpoint badge: live on every view, no badge CI needed
+TODAY_HUMAN=$(date -u +"%-d %b")
+printf '{"schemaVersion": 1, "label": "today'"'"'s paper", "message": "%s", "color": "blue"}\n' \
+  "$TODAY_HUMAN" > "$SITE/daily/badge.json"
 cp packaging/daily-index.html "$SITE/daily/index.html"
 cp packaging/root-index.html "$SITE/index.html"
 

@@ -3,6 +3,7 @@
 [![Install with apt](https://img.shields.io/badge/apt-install-blue?logo=debian)](https://roguealg0.github.io/the-daily-commit/apt/)
 [![Latest release](https://img.shields.io/github/v/release/RogueAlg0/the-daily-commit)](https://github.com/RogueAlg0/the-daily-commit/releases)
 [![CI](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml/badge.svg)](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml)
+[![Today's paper](https://img.shields.io/endpoint?url=https://roguealg0.github.io/the-daily-commit/daily/badge.json)](https://roguealg0.github.io/the-daily-commit/)
 
 Generate a vintage-newspaper "on this day in history" page for any GitHub
 repository, on demand.

@@ -4,7 +4,9 @@
 Collects everything that happened on one month-day across every year of a
 repository's history: commits, issues opened and closed, pull requests
 merged, releases published, and notable comments. Renders the result as a
-self-contained HTML page styled like a vintage newspaper.
+self-contained HTML page styled like a vintage newspaper, with a gossip
+column up front: reverts (reverts of reverts get flagged) and the day's
+most-commented threads.
 
 Usage:
     python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
@@ -44,6 +46,7 @@ MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3
 MAX_COMMENT_PAGES = 2
 MAX_YEARS = 25
+MAX_DISPLAY = 25
 
 
 _cached_token = None
@@ -190,6 +193,7 @@ def fetch_issues(repo, md):
                 "byline": byline,
                 "body": first_line(issue.get("body")),
                 "url": url,
+                "comments": issue.get("comments", 0),
             })
         if month_day(issue.get("closed_at")) == md:
             closed.append({
@@ -198,6 +202,7 @@ def fetch_issues(repo, md):
                 "byline": byline,
                 "body": first_line(issue.get("body")),
                 "url": url,
+                "comments": issue.get("comments", 0),
             })
     return opened, closed
 
@@ -277,8 +282,43 @@ def section(title, items):
     if not items:
         return ""
     items = sorted(items, key=lambda i: (i["year"], i["headline"]))
-    return "<section>\n<h2>%s</h2>\n%s\n</section>" % (
-        esc(title), "\n".join(article(i) for i in items))
+    shown = items[:MAX_DISPLAY]
+    parts = ["<section>", "<h2>%s</h2>" % esc(title)]
+    parts.extend(article(i) for i in shown)
+    if len(items) > MAX_DISPLAY:
+        parts.append('<p class="quiet">&hellip;and %d more in the archives.</p>'
+                     % (len(items) - MAX_DISPLAY))
+    parts.append("</section>")
+    return "\n".join(parts)
+
+
+def find_reverts(commits):
+    """Revert commits, the closest thing git has to public drama.
+
+    A revert of a revert is flagged: somebody re-landed what somebody
+    else undid, and the argument is now in the permanent record.
+    """
+    drama = []
+    for item in commits:
+        headline = item["headline"]
+        if not headline.startswith("Revert "):
+            continue
+        entry = dict(item)
+        if headline.startswith('Revert "Revert '):
+            entry["headline"] = "Revert of a revert: " + headline
+        drama.append(entry)
+    return drama
+
+
+def hottest_threads(opened, closed, limit=5, minimum=5):
+    """The day's most-commented issues, deduped and hottest first."""
+    seen = {}
+    for item in opened + closed:
+        seen[item["url"]] = item
+    ranked = sorted(
+        (i for i in seen.values() if i.get("comments", 0) >= minimum),
+        key=lambda i: i["comments"], reverse=True)
+    return ranked[:limit]
 
 
 def build_lede(repo, md_long, counts, years):
@@ -307,6 +347,9 @@ def build_lede(repo, md_long, counts, years):
     if counts["comments"]:
         bits.append("%d notable comment%s" % (
             counts["comments"], "" if counts["comments"] == 1 else "s"))
+    if counts["drama"]:
+        bits.append("%d scandal%s" % (counts["drama"],
+                                      "" if counts["drama"] == 1 else "s"))
     return ("On %s, across the years %s, %s saw %s."
             % (md_long, span, repo, "; ".join(bits)))
 
@@ -404,8 +447,11 @@ def main(argv=None):
     counts = {"commits": len(commits), "opened": len(opened),
               "closed": len(closed), "merged": len(merged),
               "releases": len(releases), "comments": len(comments)}
+    drama = find_reverts(commits) + hottest_threads(opened, closed)
+    counts["drama"] = len(drama)
 
     body = "\n".join([
+        section("Scandals & Corrections", drama),
         section("From the Commit Ledger", commits),
         section("Issues Opened", opened),
         section("Issues Closed", closed),

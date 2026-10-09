@@ -41,13 +41,16 @@ the-daily-commit owner/repo --out today.html
 | `--date MM-DD`  | Cover a different month-day (default: today, UTC)   |
 | `--out FILE`    | Write the HTML page to FILE                         |
 | `--no-comments` | Skip the comments section                           |
-| `--share`       | Upload the edition to htmldoc.space and print the shareable link (30-day expiry) |
+| `--share`       | Publish the edition to here.now anonymously and print the shareable link (24-hour expiry, no login) |
 
 ## Private repositories
 
-Set the `THE_DAILY_COMMIT_TOKEN` environment variable (or `GITHUB_TOKEN`) to a
-personal access token to raise the API rate limit and to cover private
-repositories you can access. Without a token, the script uses the lower
+If you are logged in with the GitHub CLI (`gh auth login`), private
+repositories you can access just work. No token setup is needed.
+
+Otherwise, set `THE_DAILY_COMMIT_TOKEN` (or `GITHUB_TOKEN`) to a personal
+access token to raise the API rate limit and to cover private
+repositories. Without any credential, the script uses the lower
 unauthenticated rate limit and can only read public repositories.
 
 ```sh
@@ -77,34 +80,27 @@ content is HTML-escaped before rendering.
 
 ## Sharing an edition
 
-The output is a single HTML file. To share it with a link that expires,
-upload the file to one of these free services:
-
-- htmldoc.space: upload the HTML file, get a shareable link that expires
-  after 30 days.
-- here.now: paste or upload the page, get a link that expires after 24
-  hours. No account is needed.
-
-The file never leaves your machine until you upload it yourself.
-
-### One-command sharing
-
-Pass `--share` to generate and upload in one step:
+Pass `--share` to generate and publish in one step:
 
 ```sh
 the-daily-commit owner/repo --share
 ```
 
-This uses the `htmldoc-cli` tool (via `npx`, so Node.js is required).
-The first share needs a one-time login:
+This publishes the page to here.now as an anonymous site and prints the
+shareable link. Anonymous publishing needs no account and no login. Links
+expire after 24 hours. The link is unlisted, but anyone with the URL can
+open it, so only share editions you are comfortable making visible.
+
+The file never leaves your machine until you share it.
+
+### Longer-lived links
+
+For a link that lasts 30 days instead of 24 hours, upload the finished
+HTML file to htmldoc.space (free; one-time GitHub login):
 
 ```sh
-npx -y htmldoc-cli login
-```
-
-Sign in with GitHub in the browser page it opens. After that, `--share`
-prints the 30-day link. The link is unlisted, but anyone with the URL can
-open it, so only share editions you are comfortable making visible.
+npx -y htmldoc-cli login  # once
+npx -y htmldoc-cli today.html
 
 ## Project layout
 

@@ -10,22 +10,24 @@ Usage:
     python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
     [--share]
 
-With --share, the finished page is uploaded to htmldoc.space and the
-shareable link (30-day expiry) is printed. The link is unlisted but anyone
+With --share, the finished page is published to here.now as an anonymous
+site and the shareable link (24-hour expiry) is printed. Anonymous
+publishing needs no account and no login. The link is unlisted but anyone
 with the URL can open it, so only share editions you are comfortable
-making visible. First share needs a one-time login:
-    npx -y htmldoc-cli login
+making visible.
 
-The month-day defaults to today (UTC). The script reads its credential from
-the THE_DAILY_COMMIT_TOKEN environment variable, falling back to GITHUB_TOKEN.
-Set one of them to raise the API rate limit and to cover private
-repositories; without a token, the script uses the lower unauthenticated
-rate limit and can only read public repositories. All API calls are
-read-only GET requests, and nothing leaves the machine the script runs on.
+The month-day defaults to today (UTC). The script authenticates with
+THE_DAILY_COMMIT_TOKEN or GITHUB_TOKEN when set, and otherwise reuses the
+GitHub CLI credential, so anyone logged in with `gh auth login` needs no
+extra setup. Without any credential, the script uses the lower
+unauthenticated rate limit and can only read public repositories. All API
+calls are read-only GET requests, and nothing leaves the machine the
+script runs on.
 """
 
 import argparse
 import datetime as dt
+import hashlib
 import html
 import json
 import os
@@ -44,6 +46,43 @@ MAX_COMMENT_PAGES = 2
 MAX_YEARS = 25
 
 
+_cached_token = None
+_token_resolved = False
+
+
+def resolve_token():
+    """Return a GitHub token, or "" when none is available.
+
+    Uses THE_DAILY_COMMIT_TOKEN or GITHUB_TOKEN when set, otherwise falls
+    back to the GitHub CLI's stored credential, so anyone already logged
+    in with `gh auth login` needs no extra setup. The result is cached for
+    the run.
+    """
+    global _cached_token, _token_resolved
+    if _token_resolved:
+        return _cached_token
+    token = ""
+    for var in ("THE_DAILY_COMMIT_TOKEN", "GITHUB_TOKEN"):
+        token = os.environ.get(var, "").strip()
+        if token:
+            break
+    else:
+        gh = shutil.which("gh")
+        if gh is not None:
+            try:
+                proc = subprocess.run(
+                    [gh, "auth", "token"],
+                    capture_output=True, text=True, timeout=15)
+                candidate = proc.stdout.strip()
+                if proc.returncode == 0 and candidate:
+                    token = candidate
+            except (OSError, subprocess.TimeoutExpired):
+                token = ""
+    _cached_token = token
+    _token_resolved = True
+    return _cached_token
+
+
 def api_get(path, params=None):
     """Perform one authenticated-or-anonymous GET against the GitHub API."""
     url = API + path
@@ -56,7 +95,7 @@ def api_get(path, params=None):
             "User-Agent": "the-daily-commit-generator",
         },
     )
-    token = os.environ.get("THE_DAILY_COMMIT_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = resolve_token()
     if token:
         req.add_header("Authorization", "Bearer " + token)
     with urllib.request.urlopen(req, timeout=30) as resp:
@@ -258,29 +297,61 @@ def build_lede(repo, md_long, counts, years):
             % (md_long, span, repo, "; ".join(bits)))
 
 
+HERENOW_API = "https://here.now/api/v1"
+HERENOW_CLIENT = "the-daily-commit"
+
+
 def share_html(path):
-    """Upload path to htmldoc.space; return the share URL, or "" on failure."""
-    if not shutil.which("npx"):
-        print("error: --share needs Node.js (npx not found on PATH).",
-              file=sys.stderr)
-        return ""
+    """Publish path to here.now as an anonymous site.
+
+    Returns the live URL (expires in 24 hours), or "" on failure.
+    Anonymous publishing needs no account and no login.
+    """
     try:
-        proc = subprocess.run(
-            ["npx", "-y", "htmldoc-cli", path],
-            capture_output=True, text=True, timeout=180)
-    except subprocess.TimeoutExpired:
-        print("error: htmldoc-cli timed out.", file=sys.stderr)
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as exc:
+        print("error: cannot read %s: %s" % (path, exc), file=sys.stderr)
         return ""
-    tokens = proc.stdout.strip().split()
-    url = tokens[-1] if tokens else ""
-    if proc.returncode != 0 or not url.startswith("http"):
-        print("error: share failed. First share needs a one-time login:",
-              file=sys.stderr)
-        print("  npx -y htmldoc-cli login", file=sys.stderr)
-        if proc.stderr.strip():
-            print(proc.stderr.strip()[-2000:], file=sys.stderr)
+    manifest = {"files": [{
+        "path": "index.html",
+        "size": len(data),
+        "contentType": "text/html; charset=utf-8",
+        "hash": hashlib.sha256(data).hexdigest(),
+    }]}
+    headers = {"Content-Type": "application/json",
+               "x-herenow-client": HERENOW_CLIENT,
+               "User-Agent": "the-daily-commit-generator"}
+    try:
+        create_req = urllib.request.Request(
+            HERENOW_API + "/publish",
+            data=json.dumps(manifest).encode(), headers=headers)
+        with urllib.request.urlopen(create_req, timeout=30) as resp:
+            created = json.loads(resp.read().decode("utf-8"))
+        if created.get("error"):
+            raise ValueError(created["error"])
+        upload = created["upload"]
+        for item in upload["uploads"]:
+            content_type = item["headers"].get(
+                "Content-Type", "text/html; charset=utf-8")
+            put_req = urllib.request.Request(
+                item["url"], data=data, method="PUT",
+                headers={"Content-Type": content_type})
+            with urllib.request.urlopen(put_req, timeout=60) as put_resp:
+                if not 200 <= put_resp.status < 300:
+                    raise ValueError("upload HTTP %d" % put_resp.status)
+        finalize_req = urllib.request.Request(
+            upload["finalizeUrl"],
+            data=json.dumps({"versionId": upload["versionId"]}).encode(),
+            headers=headers)
+        with urllib.request.urlopen(finalize_req, timeout=30) as resp:
+            finalized = json.loads(resp.read().decode("utf-8"))
+        if finalized.get("error"):
+            raise ValueError(finalized["error"])
+        return created.get("siteUrl") or ""
+    except Exception as exc:  # noqa: BLE001 - report, never crash the run
+        print("error: share failed: %s" % exc, file=sys.stderr)
         return ""
-    return url
 
 
 def main(argv=None):
@@ -294,8 +365,9 @@ def main(argv=None):
     parser.add_argument("--no-comments", action="store_true",
                         help="Skip the comments section")
     parser.add_argument("--share", action="store_true",
-                        help="Upload the edition to htmldoc.space and print "
-                             "the shareable link (30-day expiry)")
+                        help="Publish the edition to here.now anonymously "
+                             "and print the shareable link (24-hour expiry, "
+                             "no login required)")
     args = parser.parse_args(argv)
 
     if args.date:

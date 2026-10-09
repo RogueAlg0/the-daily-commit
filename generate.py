@@ -2102,6 +2102,13 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
     docket_items = commits + opened + prs_opened + merged + closed
     serious = [d for d in drama if d.get("quip_type") != "quip"]
     quip_items = [d for d in drama if d.get("quip_type") == "quip"]
+    # Charm sections, same as repo mode. No new-voices Post-its:
+    # author mode is one user by definition.
+    weather_text = repo_weather(commits, merges, opened)
+    marriages = marriage_announcements(merges, seed=seed)
+    letters = letters_to_editor(commits)
+    missed = missed_connections(opened, closed)
+    ads = classified_ads(seed=seed, md=mds[0] if mds else "")
     sections = [
         pullquote(quote),
         overheard_box(quip_items),
@@ -2114,6 +2121,12 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
         section("Pull Requests Merged", merged, lead=True),
         section("Issues Closed", closed, brief=True),
         section("Voices From the Threads", comments),
+        charm_box("Weather", [{"headline": "", "body": weather_text}],
+                  style="weather"),
+        charm_box("Marriages", marriages, style="marriage"),
+        charm_box("Letters to the Editor", letters, style="letter"),
+        charm_box("Missed Connections", missed, style="missed"),
+        charm_box("Classifieds", ads, style="classified"),
     ]
     if week_days:
         pairs = [("commit", "commits", commits),
@@ -2129,6 +2142,7 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
         memory.record(
             edition_key,
             quips=[quip_text(q) for q in quips],
+            ads=[a.get("headline", "") for a in ads],
             contributors=[c.get("login") or c.get("byline", "")
                           for c in commits],
             lead_headline=(quote or {}).get("text", ""),

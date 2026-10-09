@@ -102,6 +102,55 @@ the-daily-commit --author RogueAlg0 --week --out week.html
 In author mode, `--week-url URL` adds a "This week in USER" link to the
 top of the daily edition, pointing at its weekly edition.
 
+### Cards and badges
+
+`--card` emits a standalone SVG card instead of the HTML page, for
+embedding in README files. It works in both modes, for any author or
+any repository:
+
+```sh
+the-daily-commit --author RogueAlg0 --card --out card.svg
+the-daily-commit python/cpython --card --card-style badge --out badge.svg
+```
+
+`--card-size sm|md|lg` picks the size (default `md`);
+`--card-style paper|badge` picks the newspaper card or a shields-style
+badge (default `paper`). With no `--out`, the SVG prints to stdout.
+
+To keep a card fresh in your profile README, run it daily from a
+workflow in your profile repository and commit the result:
+
+```yaml
+name: daily-card
+on:
+  schedule: [{cron: "0 5 * * *"}]
+  workflow_dispatch:
+jobs:
+  card:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          echo "deb [trusted=yes] https://roguealg0.github.io/the-daily-commit/apt/ ./" \
+            | sudo tee /etc/apt/sources.list.d/daily-commit.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq the-daily-commit
+      - run: the-daily-commit --author ${{ github.repository_owner }}
+               --card --card-size sm --out card.svg
+      - run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add card.svg
+          git commit -m "daily card" || true
+          git push
+```
+
+Then embed it:
+
+```markdown
+[![daily commit](card.svg)](https://github.com/USER)
+```
+
 ## Options
 
 | Flag            | Effect                                              |

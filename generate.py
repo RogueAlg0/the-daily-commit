@@ -17,12 +17,26 @@ Usage:
     python3 generate.py owner/repo [owner/repo ...] [--date MM-DD]
         [--out FILE] [--no-comments] [--share]
     python3 generate.py --author USER [--date MM-DD] [--out FILE] [--share]
+    python3 generate.py workspace/repo-slug --platform bitbucket
+        [--date MM-DD] [--out FILE]
 
 With --share, the finished page is published to here.now as an anonymous
 site and the shareable link (24-hour expiry) is printed. Anonymous
 publishing needs no account and no login. The link is unlisted but anyone
 with the URL can open it, so only share editions you are comfortable
 making visible.
+
+Bitbucket mode (--platform bitbucket) reads repository activity through
+the Bitbucket Cloud 2.0 API instead of the GitHub API. Credentials are
+discovered in order, first hit wins: --bitbucket-token (then
+BITBUCKET_API_TOKEN), the git credential helper for host=bitbucket.org,
+then anonymous (public repositories only). With --bitbucket-email (or
+BITBUCKET_EMAIL), the token is used as an app password over HTTP Basic;
+a bare token is sent as a Bearer token. Author mode is not supported
+for Bitbucket: it needs the GitHub search API. Bitbucket exposes no
+releases feature and no closed_on or merged_on timestamps, so releases
+are skipped and issue-close and PR-merge days are approximated from
+updated_on.
 
 The month-day defaults to today (local time). The script authenticates with
 THE_DAILY_COMMIT_TOKEN or GITHUB_TOKEN when set, and otherwise reuses the
@@ -34,6 +48,7 @@ script runs on.
 """
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import html
@@ -161,6 +176,189 @@ def api_paged(path, params, max_pages, ignore_404=False):
     return items
 
 
+BB_API = "https://api.bitbucket.org/2.0"
+
+
+_cached_bb_auth = None
+_bb_auth_resolved = False
+
+
+def bitbucket_credentials_from_git():
+    """(username, password) for bitbucket.org from the git credential helper.
+
+    Runs `git credential fill` with protocol=https and
+    host=bitbucket.org on stdin, with GIT_TERMINAL_PROMPT=0 so it
+    fails fast instead of prompting when nothing is stored. A
+    Bitbucket app password stored for git works for the REST API
+    too. Returns ("", "") when git is missing, the helper errors or
+    times out, or no username and password come back. Degrades
+    silently: the caller falls through to the next auth method.
+    Never prints credential values.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return "", ""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(
+            [git, "credential", "fill"],
+            input="protocol=https\nhost=bitbucket.org\n",
+            capture_output=True, text=True, timeout=15, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return "", ""
+    if proc.returncode != 0:
+        return "", ""
+    username, password = "", ""
+    for line in proc.stdout.splitlines():
+        if line.startswith("username="):
+            username = line[len("username="):].strip()
+        elif line.startswith("password="):
+            password = line[len("password="):].strip()
+    if username and password:
+        return username, password
+    return "", ""
+
+
+def resolve_bb_auth(email="", token=""):
+    """Return (email, token, method) for Bitbucket auth.
+
+    Precedence, first hit wins:
+    1. Explicit: --bitbucket-token flag, then BITBUCKET_API_TOKEN
+       env. With --bitbucket-email / BITBUCKET_EMAIL, HTTP Basic is
+       used; a bare token is sent as a Bearer token.
+    2. The git credential helper for host=bitbucket.org: a stored
+       username and app password are used over HTTP Basic.
+    3. Anonymous: public repositories only.
+
+    method is one of "explicit", "git-credential", "anonymous". The
+    result is cached for the run. Nothing here prints or logs
+    credential values.
+    """
+    global _cached_bb_auth, _bb_auth_resolved
+    if _bb_auth_resolved:
+        return _cached_bb_auth
+    email = email or os.environ.get("BITBUCKET_EMAIL", "").strip()
+    token = token or os.environ.get("BITBUCKET_API_TOKEN", "").strip()
+    if token:
+        _cached_bb_auth = (email, token, "explicit")
+    else:
+        username, password = bitbucket_credentials_from_git()
+        if username and password:
+            _cached_bb_auth = (username, password, "git-credential")
+        else:
+            _cached_bb_auth = ("", "", "anonymous")
+    _bb_auth_resolved = True
+    return _cached_bb_auth
+
+
+def _bb_auth_error(exc):
+    """Raise a helpful error for Bitbucket 401/403 responses.
+
+    Names the auth method in use and the full precedence chain, with
+    fix instructions. Mentions no credential values.
+    """
+    method = resolve_bb_auth()[2]
+    used = {
+        "explicit": "--bitbucket-token / BITBUCKET_API_TOKEN",
+        "git-credential": "git credential helper for host=bitbucket.org",
+        "anonymous": "anonymous access",
+    }[method]
+    raise RuntimeError(
+        "error: Bitbucket rejected the request (HTTP %d) with %s. "
+        "Auth methods, first hit wins: --bitbucket-token / "
+        "BITBUCKET_API_TOKEN, git credential helper for "
+        "host=bitbucket.org, anonymous access. Fix: create a Bitbucket "
+        "app password (or API token) with repository read access and "
+        "pass it via --bitbucket-token, set BITBUCKET_API_TOKEN, or "
+        "store it with git credential for host=bitbucket.org."
+        % (exc.code, used))
+
+
+def bb_get(path, params=None):
+    """Perform one GET against the Bitbucket Cloud 2.0 API.
+
+    Auth follows resolve_bb_auth: explicit token (HTTP Basic with the
+    email as the username when one is set, else a Bearer token), then
+    the git credential helper over HTTP Basic, then anonymous, which
+    only reads public repositories. A 401/403 raises a RuntimeError
+    naming the auth methods tried and how to fix it. All calls are
+    read-only GET requests.
+    """
+    url = BB_API + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "the-daily-commit-generator",
+        },
+    )
+    email, token, method = resolve_bb_auth()
+    if token:
+        if method == "explicit" and not email:
+            req.add_header("Authorization", "Bearer " + token)
+        else:
+            pair = base64.b64encode(
+                ("%s:%s" % (email, token)).encode("utf-8")).decode("ascii")
+            req.add_header("Authorization", "Basic " + pair)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            _bb_auth_error(exc)
+        raise
+
+
+def bb_paged(path, params, max_pages, ignore_404=False):
+    """Collect up to max_pages from a Bitbucket paginated endpoint.
+
+    Bitbucket paginates with ?page=N&pagelen=100 and returns
+    {"values": [...], "next": ...}. Paging stops when a page returns
+    fewer values than requested or no "next" link is present. With
+    ignore_404, a 404 becomes an empty collection.
+    """
+    items = []
+    params = dict(params or {})
+    params["pagelen"] = params.get("pagelen", 100)
+    for page in range(1, max_pages + 1):
+        params["page"] = page
+        try:
+            data = bb_get(path, params)
+        except urllib.error.HTTPError as exc:
+            if ignore_404 and exc.code == 404:
+                return items
+            raise
+        batch = data.get("values", []) if isinstance(data, dict) else []
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < params["pagelen"] or not data.get("next"):
+            break
+    return items
+
+
+def bb_stamp(stamp):
+    """Normalize a Bitbucket ISO 8601 stamp to a UTC "Z" stamp.
+
+    Bitbucket returns numeric offsets (2026-10-09T12:34:56+00:00).
+    month_day() and year_of() slice fixed positions, so converting to
+    UTC first keeps day boundaries consistent. Returns "" for blank
+    input and the input unchanged when it does not parse.
+    """
+    if not stamp:
+        return ""
+    try:
+        parsed = dt.datetime.fromisoformat(stamp)
+    except ValueError:
+        return stamp
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def month_day(iso_stamp):
     """Extract MM-DD from an ISO 8601 timestamp. Returns None when absent."""
     if not iso_stamp or len(iso_stamp) < 10:
@@ -214,6 +412,16 @@ def _title_link(title):
     """Repo title as a hyperlink, when it looks like owner/repo."""
     if "/" in title and " " not in title:
         url = "https://github.com/" + title
+        return '<a href="%s">%s</a>' % (esc(url), esc(title))
+    return esc(title)
+
+
+def _bb_title_link(title):
+    """Repo title as a hyperlink to bitbucket.org, when it looks like
+    workspace/repo-slug."""
+    if "/" in title and " " not in title:
+        workspace, slug = title.split("/", 1)
+        url = BitbucketPlatform().repo_url(workspace, slug)
         return '<a href="%s">%s</a>' % (esc(url), esc(title))
     return esc(title)
 
@@ -669,6 +877,243 @@ def repo_is_private(owner, repo):
         except urllib.error.HTTPError:
             _repo_private_cache[key] = False
     return _repo_private_cache[key]
+
+
+def bb_repo_is_private(workspace, repo):
+    """True when the Bitbucket repository is private, cached for the run.
+
+    Shares the run cache with repo_is_private under a "bb:" prefix so
+    GitHub and Bitbucket lookups never collide.
+    """
+    key = "bb:%s/%s" % (workspace, repo)
+    if key not in _repo_private_cache:
+        try:
+            info = bb_get("/repositories/%s/%s" % (workspace, repo))
+            _repo_private_cache[key] = bool(info.get("is_private"))
+        except urllib.error.HTTPError:
+            _repo_private_cache[key] = False
+    return _repo_private_cache[key]
+
+
+def _bb_html_url(entry):
+    """The web URL Bitbucket reports for a resource, or ""."""
+    return ((entry.get("links") or {}).get("html") or {}).get("href", "")
+
+
+def _bb_raw_name(raw):
+    """Display name from a Bitbucket "Name <email>" raw author string."""
+    name = (raw or "").split("<")[0].strip()
+    return name or "unknown"
+
+
+def bb_fetch_commits(workspace, repo, mds, years):
+    """Commits whose date falls on the month-days, via Bitbucket.
+
+    The commits endpoint lists newest-first with no server-side date
+    filter, so the client filters by month-day and stops paging once
+    commits are older than the oldest needed year. Normalized dicts
+    match the GitHub fetch_commits shape.
+    """
+    mds = set(mds)
+    found = []
+    oldest = min(years)
+    path = "/repositories/%s/%s/commits" % (workspace, repo)
+    for entry in bb_paged(path, {}, MAX_COMMIT_PAGES, ignore_404=True):
+        stamp = bb_stamp(entry.get("date", ""))
+        year = year_of(stamp) if stamp else 0
+        if year and year < oldest:
+            break
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        sha = entry.get("hash", "")
+        found.append({
+            "year": year,
+            "day": day,
+            "headline": first_line(entry.get("message")),
+            "byline": _bb_raw_name((entry.get("author") or {}).get("raw")),
+            "body": sha[:7],
+            "url": _bb_html_url(entry),
+            "login": "",
+            "author_url": "",
+        })
+    return found
+
+
+def bb_fetch_issues(workspace, repo, mds):
+    """Issues opened or closed on the month-days, via Bitbucket.
+
+    Bitbucket exposes no closed_on timestamp, so the closed day is
+    approximated with updated_on for issues in a terminal state
+    (resolved, closed, duplicate, wontfix). Opened uses created_on.
+    Normalized dicts match the GitHub fetch_issues shape, with the
+    issue id stored as "number".
+    """
+    mds = set(mds)
+    seen = set()
+    opened, closed = [], []
+    path = "/repositories/%s/%s/issues" % (workspace, repo)
+    for issue in bb_paged(path, {"sort": "-created_on"}, MAX_ISSUE_PAGES,
+                          ignore_404=True):
+        number = issue.get("id")
+        if number in seen:
+            continue
+        seen.add(number)
+        title = first_line(issue.get("title"))
+        body = first_line(((issue.get("content") or {}).get("raw")) or "")
+        byline = ((issue.get("reporter") or {}).get("display_name")
+                  or "unknown")
+        url = _bb_html_url(issue)
+        created_stamp = bb_stamp(issue.get("created_on", ""))
+        created_day = month_day(created_stamp)
+        if created_day in mds:
+            opened.append({
+                "year": year_of(created_stamp),
+                "day": created_day,
+                "headline": "#%s %s" % (number, title),
+                "byline": byline,
+                "body": body,
+                "url": url,
+                "number": number,
+                "comments": issue.get("comment_count", 0),
+                "author_url": "",
+            })
+        state = (issue.get("state") or "").lower()
+        if state in ("resolved", "closed", "duplicate", "wontfix"):
+            updated_stamp = bb_stamp(issue.get("updated_on", ""))
+            closed_day = month_day(updated_stamp)
+            if closed_day in mds:
+                closed.append({
+                    "year": year_of(updated_stamp),
+                    "day": closed_day,
+                    "headline": "#%s %s" % (number, title),
+                    "byline": byline,
+                    "body": body,
+                    "url": url,
+                    "number": number,
+                    "comments": issue.get("comment_count", 0),
+                    "author_url": "",
+                })
+    return opened, closed
+
+
+def bb_fetch_merged_prs(workspace, repo, mds):
+    """Pull requests merged on the month-days, via Bitbucket.
+
+    Bitbucket exposes no merged_on timestamp, so the merge day is
+    approximated with updated_on for pull requests in MERGED state.
+    Normalized dicts match the GitHub fetch_merged_prs shape, with
+    the pull request id stored as "number".
+    """
+    mds = set(mds)
+    merged = []
+    path = "/repositories/%s/%s/pullrequests" % (workspace, repo)
+    for pr in bb_paged(path, {"state": "MERGED", "sort": "-updated_on"},
+                       MAX_PULL_PAGES, ignore_404=True):
+        stamp = bb_stamp(pr.get("updated_on", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        number = pr.get("id")
+        src = ((pr.get("source") or {}).get("branch") or {}).get("name")
+        dst = ((pr.get("destination") or {}).get("branch") or {}).get("name")
+        merged.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": "#%s %s (%s \u2192 %s)" % (
+                number, first_line(pr.get("title")), src or "?",
+                dst or "?"),
+            "byline": ((pr.get("author") or {}).get("display_name")
+                       or "unknown"),
+            "body": first_line(pr.get("description")),
+            "url": _bb_html_url(pr),
+            "number": number,
+        })
+    return merged
+
+
+def bb_fetch_releases(workspace, repo, mds):
+    """Bitbucket has no releases feature, so this returns [].
+
+    The edition renders without a Releases section, the same as a
+    GitHub repository with no releases.
+    """
+    return []
+
+
+def bb_fetch_tags(workspace, repo, mds, skip_names):
+    """Tags cut on the month-days, via Bitbucket.
+
+    Unlike the GitHub tags endpoint, Bitbucket returns each tag's
+    date directly on the target, so no extra commit lookups are
+    needed. The skip_names contract matches fetch_tags: tags already
+    covered by a release are skipped. The tag URL points at the
+    tagged commit through the Bitbucket URL shapes.
+    """
+    mds = set(mds)
+    found = []
+    path = "/repositories/%s/%s/refs/tags" % (workspace, repo)
+    platform = BitbucketPlatform()
+    for tag in bb_paged(path, {}, 1, ignore_404=True):
+        name = tag.get("name") or ""
+        if not name or name in skip_names:
+            continue
+        target = tag.get("target") or {}
+        stamp = bb_stamp(target.get("date", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        sha = target.get("hash", "")
+        found.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": name,
+            "byline": _bb_raw_name((target.get("author") or {}).get("raw")),
+            "body": first_line(target.get("message")),
+            "url": platform.commit_url(workspace, repo, sha or name),
+        })
+    return found
+
+
+def bb_fetch_comments(workspace, repo, mds, prs, issues):
+    """Up to five pull-request or issue comments on the month-days.
+
+    Bitbucket has no repository-wide comments endpoint, so this is
+    best-effort: comments are pulled from up to 10 of the
+    already-fetched pull requests and issues, filtered by month-day,
+    and capped at 5 total. Normalized dicts match the GitHub
+    fetch_comments shape.
+    """
+    mds = set(mds)
+    picked = []
+    targets = ([("pullrequests", pr.get("number")) for pr in prs[:5]]
+               + [("issues", issue.get("number")) for issue in issues[:5]])
+    for kind, number in targets[:10]:
+        if number is None or len(picked) >= 5:
+            continue
+        path = "/repositories/%s/%s/%s/%s/comments" % (
+            workspace, repo, kind, number)
+        for comment in bb_paged(path, {"sort": "-created_on"}, 1,
+                                ignore_404=True):
+            stamp = bb_stamp(comment.get("created_on", ""))
+            day = month_day(stamp)
+            if day not in mds:
+                continue
+            content = (comment.get("content") or {}).get("raw") or ""
+            picked.append({
+                "year": year_of(stamp),
+                "day": day,
+                "headline": "A voice from the threads",
+                "byline": ((comment.get("user") or {}).get("display_name")
+                           or "unknown"),
+                "body": first_line(content),
+                "url": _bb_html_url(comment),
+            })
+            if len(picked) >= 5:
+                break
+        if len(picked) >= 5:
+            break
+    return picked
 
 
 def author_commits(user, mds, years):
@@ -1931,14 +2376,46 @@ def anniversary_batches(items, current_year, span=""):
 
 
 def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
-                 memory=None, edition_key=""):
-    """Edition data across one or more repositories."""
+                 memory=None, edition_key="", bitbucket=False):
+    """Edition data across one or more repositories.
+
+    With bitbucket=True, repositories are workspace/repo-slug pairs
+    read through the Bitbucket Cloud 2.0 API instead of the GitHub
+    API. Everything downstream of the fetch step is identical.
+    """
     current_year = dt.datetime.now().year
     data = {"commits": [], "opened": [], "closed": [], "merged": [],
             "releases": [], "tags": [], "comments": []}
     created = []
     private = False
     for repo in repos:
+        if bitbucket:
+            workspace, slug = repo.split("/", 1)
+            info = bb_get("/repositories/%s/%s" % (workspace, slug))
+            created.append(year_of(bb_stamp(
+                info.get("created_on", "2020-01-01T00:00:00Z"))))
+            private = private or bb_repo_is_private(workspace, slug)
+            years = list(range(created[-1], current_year + 1))[-MAX_YEARS:]
+            data["commits"].extend(tag_repo(
+                bb_fetch_commits(workspace, slug, mds, years), repo))
+            opened, closed = bb_fetch_issues(workspace, slug, mds)
+            data["opened"].extend(tag_repo(opened, repo))
+            data["closed"].extend(tag_repo(closed, repo))
+            repo_merged = tag_repo(bb_fetch_merged_prs(workspace, slug, mds),
+                                   repo)
+            data["merged"].extend(repo_merged)
+            repo_releases = tag_repo(
+                bb_fetch_releases(workspace, slug, mds), repo)
+            data["releases"].extend(repo_releases)
+            data["tags"].extend(tag_repo(
+                bb_fetch_tags(workspace, slug, mds,
+                              {r["tag"] for r in repo_releases if r["tag"]}),
+                repo))
+            if not no_comments:
+                data["comments"].extend(tag_repo(
+                    bb_fetch_comments(workspace, slug, mds,
+                                      repo_merged, opened), repo))
+            continue
         info = api_get("/repos/%s" % repo)
         created.append(year_of(info.get("created_at", "2020-01-01T00:00:00Z")))
         private = private or bool(info.get("private"))
@@ -2305,6 +2782,14 @@ def main(argv=None):
                                  "gitea", "forgejo", "generic"],
                         help="Override platform auto-detection for the repo "
                              "host (for self-hosted or unusual forges)")
+    parser.add_argument("--bitbucket-token", default="",
+                        help="Bitbucket API token (default: "
+                             "BITBUCKET_API_TOKEN env). With "
+                             "--bitbucket-email, used as an app password "
+                             "over HTTP Basic; otherwise as a Bearer token")
+    parser.add_argument("--bitbucket-email", default="",
+                        help="Bitbucket account email for HTTP Basic auth "
+                             "(default: BITBUCKET_EMAIL env)")
     args = parser.parse_args(argv)
 
     if args.author and args.repos:
@@ -2316,6 +2801,14 @@ def main(argv=None):
         parser.error("--week-url needs --author")
     if args.card and args.share:
         parser.error("--card cannot be combined with --share")
+    if args.platform == "bitbucket" and args.author:
+        parser.error("--platform bitbucket does not support --author: "
+                     "author mode needs the GitHub search API")
+    if args.platform == "bitbucket":
+        for repo in args.repos:
+            if "/" not in repo:
+                parser.error("--platform bitbucket needs repositories as "
+                             "workspace/repo-slug, got %r" % repo)
 
     now = dt.datetime.now()
     if args.date:
@@ -2363,6 +2856,12 @@ def main(argv=None):
         edition = gather_author(args.author, mds, week_days,
                                 ticket_url=args.ticket_url,
                                 memory=memory, edition_key=edition_key)
+    elif args.platform == "bitbucket":
+        resolve_bb_auth(args.bitbucket_email, args.bitbucket_token)
+        edition = gather_repos(args.repos, mds, args.no_comments,
+                               week_days, ticket_url=args.ticket_url,
+                               memory=memory, edition_key=edition_key,
+                               bitbucket=True)
     else:
         edition = gather_repos(args.repos, mds, args.no_comments,
                                week_days, ticket_url=args.ticket_url,
@@ -2391,9 +2890,12 @@ def main(argv=None):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(script_dir, "template.html"), encoding="utf-8") as f:
         template = f.read()
+    title_link = (_bb_title_link(edition["title"])
+                  if args.platform == "bitbucket" and not args.author
+                  else _title_link(edition["title"]))
     page = (template
             .replace("{{TITLE}}", esc(edition["title"]))
-            .replace("{{TITLE_LINK}}", _title_link(edition["title"]))
+            .replace("{{TITLE_LINK}}", title_link)
             .replace("{{KICKER}}", "A weekly chronicle of repository history"
                      if args.week else "A daily chronicle of repository history")
             .replace("{{DATELINE}}", esc(md_long))

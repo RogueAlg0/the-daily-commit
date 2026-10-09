@@ -252,11 +252,14 @@ def resolve_bb_auth(email="", token=""):
     return _cached_bb_auth
 
 
-def _bb_auth_error(exc):
-    """Raise a helpful error for Bitbucket 401/403 responses.
+def _bb_auth_error(exc, not_found=False):
+    """Raise a helpful error for Bitbucket 401/403/404 responses.
 
-    Names the auth method in use and the full precedence chain, with
-    fix instructions. Mentions no credential values.
+    Bitbucket returns 404 (not 401) for private repositories when
+    the caller lacks access, so a 404 on the repository lookup means
+    "not found or not accessible". Names the auth method in use and
+    the full precedence chain, with fix instructions. Mentions no
+    credential values.
     """
     method = resolve_bb_auth()[2]
     used = {
@@ -264,15 +267,20 @@ def _bb_auth_error(exc):
         "git-credential": "git credential helper for host=bitbucket.org",
         "anonymous": "anonymous access",
     }[method]
+    if not_found:
+        what = ("Bitbucket returned 404: the repository was not found, "
+                "or it is private and not accessible")
+    else:
+        what = "Bitbucket rejected the request (HTTP %d)" % exc.code
     raise RuntimeError(
-        "error: Bitbucket rejected the request (HTTP %d) with %s. "
+        "error: %s with %s. "
         "Auth methods, first hit wins: --bitbucket-token / "
         "BITBUCKET_API_TOKEN, git credential helper for "
         "host=bitbucket.org, anonymous access. Fix: create a Bitbucket "
         "app password (or API token) with repository read access and "
         "pass it via --bitbucket-token, set BITBUCKET_API_TOKEN, or "
         "store it with git credential for host=bitbucket.org."
-        % (exc.code, used))
+        % (what, used))
 
 
 def bb_get(path, params=None):
@@ -2391,7 +2399,12 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
     for repo in repos:
         if bitbucket:
             workspace, slug = repo.split("/", 1)
-            info = bb_get("/repositories/%s/%s" % (workspace, slug))
+            try:
+                info = bb_get("/repositories/%s/%s" % (workspace, slug))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    _bb_auth_error(exc, not_found=True)
+                raise
             created.append(year_of(bb_stamp(
                 info.get("created_on", "2020-01-01T00:00:00Z"))))
             private = private or bb_repo_is_private(workspace, slug)

@@ -19,6 +19,8 @@ Usage:
     python3 generate.py --author USER [--date MM-DD] [--out FILE] [--share]
     python3 generate.py workspace/repo-slug --platform bitbucket
         [--date MM-DD] [--out FILE]
+    python3 generate.py namespace/project-slug --platform gitlab
+        [--date MM-DD] [--out FILE] [--gitlab-url URL]
 
 With --share, the finished page is published to here.now as an anonymous
 site and the shareable link (24-hour expiry) is printed. Anonymous
@@ -37,6 +39,17 @@ for Bitbucket: it needs the GitHub search API. Bitbucket exposes no
 releases feature and no closed_on or merged_on timestamps, so releases
 are skipped and issue-close and PR-merge days are approximated from
 updated_on.
+GitLab mode (--platform gitlab) reads repository activity through the
+GitLab REST v4 API instead of the GitHub API. The project path is
+namespace/project-slug (URL-encoded automatically). Credentials are
+discovered in order, first hit wins: --gitlab-token (then
+GITLAB_API_TOKEN), the git credential helper for the GitLab host, then
+anonymous (public projects only). With --gitlab-email (or GITLAB_EMAIL),
+the token is sent as the password over HTTP Basic; a bare token is sent
+as a Private-Token header. --gitlab-url (or GITLAB_URL) points at a
+self-hosted instance, default https://gitlab.com. Author mode is not
+supported for GitLab: it needs the GitHub search API. Unlike Bitbucket,
+GitLab exposes real closed_at, merged_at, and release timestamps.
 
 The month-day defaults to today (local time). The script authenticates with
 THE_DAILY_COMMIT_TOKEN or GITHUB_TOKEN when set, and otherwise reuses the
@@ -430,6 +443,16 @@ def _bb_title_link(title):
     if "/" in title and " " not in title:
         workspace, slug = title.split("/", 1)
         url = BitbucketPlatform().repo_url(workspace, slug)
+        return '<a href="%s">%s</a>' % (esc(url), esc(title))
+    return esc(title)
+
+
+def _gl_title_link(title, web_base="https://gitlab.com"):
+    """Repo title as a hyperlink to the GitLab instance, when it looks
+    like namespace/project-slug."""
+    if "/" in title and " " not in title:
+        namespace, slug = title.split("/", 1)
+        url = "%s/%s/%s" % (web_base.rstrip("/"), namespace, slug)
         return '<a href="%s">%s</a>' % (esc(url), esc(title))
     return esc(title)
 
@@ -1116,6 +1139,465 @@ def bb_fetch_comments(workspace, repo, mds, prs, issues):
                            or "unknown"),
                 "body": first_line(content),
                 "url": _bb_html_url(comment),
+            })
+            if len(picked) >= 5:
+                break
+        if len(picked) >= 5:
+            break
+    return picked
+
+
+GL_DEFAULT_URL = "https://gitlab.com"
+
+
+_cached_gl_auth = None
+_gl_auth_resolved = False
+_gl_api_base = GL_DEFAULT_URL + "/api/v4"
+_gl_web_base = GL_DEFAULT_URL
+
+
+def gitlab_credentials_from_git(host):
+    """(username, password) for the GitLab host from the git credential helper.
+
+    Runs `git credential fill` with protocol=https and host=<host> on
+    stdin, with GIT_TERMINAL_PROMPT=0 so it fails fast instead of
+    prompting when nothing is stored. A GitLab personal access token
+    stored for git works for the REST API too. Returns ("", "") when
+    git is missing, the helper errors or times out, or no username and
+    password come back. Degrades silently: the caller falls through to
+    the next auth method. Never prints credential values.
+    """
+    git = shutil.which("git")
+    if git is None:
+        return "", ""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        proc = subprocess.run(
+            [git, "credential", "fill"],
+            input="protocol=https\nhost=%s\n" % host,
+            capture_output=True, text=True, timeout=15, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return "", ""
+    if proc.returncode != 0:
+        return "", ""
+    username, password = "", ""
+    for line in proc.stdout.splitlines():
+        if line.startswith("username="):
+            username = line[len("username="):].strip()
+        elif line.startswith("password="):
+            password = line[len("password="):].strip()
+    if username and password:
+        return username, password
+    return "", ""
+
+
+def resolve_gl_auth(email="", token="", gitlab_url=""):
+    """Return (email, token, method) for GitLab auth.
+
+    Precedence, first hit wins:
+    1. Explicit: --gitlab-token flag, then GITLAB_API_TOKEN env.
+       With --gitlab-email / GITLAB_EMAIL, the token is sent as the
+       password over HTTP Basic; a bare token is sent as a
+       Private-Token header.
+    2. The git credential helper for the GitLab host: a stored
+       username and personal access token are used over HTTP Basic.
+    3. Anonymous: public projects only.
+
+    The instance comes from --gitlab-url / GITLAB_URL, default
+    https://gitlab.com. It sets the API base and the web base used
+    for commit links. method is one of "explicit", "git-credential",
+    "anonymous". The result is cached for the run. Nothing here prints
+    or logs credential values.
+    """
+    global _cached_gl_auth, _gl_auth_resolved, _gl_api_base, _gl_web_base
+    if _gl_auth_resolved:
+        return _cached_gl_auth
+    base = (gitlab_url or os.environ.get("GITLAB_URL", "")
+            or GL_DEFAULT_URL).rstrip("/")
+    _gl_web_base = base
+    _gl_api_base = base + "/api/v4"
+    host = urllib.parse.urlparse(base).hostname or "gitlab.com"
+    email = email or os.environ.get("GITLAB_EMAIL", "").strip()
+    token = token or os.environ.get("GITLAB_API_TOKEN", "").strip()
+    if token:
+        _cached_gl_auth = (email, token, "explicit")
+    else:
+        username, password = gitlab_credentials_from_git(host)
+        if username and password:
+            _cached_gl_auth = (username, password, "git-credential")
+        else:
+            _cached_gl_auth = ("", "", "anonymous")
+    _gl_auth_resolved = True
+    return _cached_gl_auth
+
+
+def _gl_auth_error(exc, not_found=False):
+    """Raise a helpful error for GitLab 401/403/404 responses.
+
+    GitLab returns 404 (not 401) for private projects when the caller
+    lacks access, so a 404 on the project lookup means "not found or
+    not accessible". Names the auth method in use and the full
+    precedence chain, with fix instructions. Mentions no credential
+    values.
+    """
+    method = resolve_gl_auth()[2]
+    host = urllib.parse.urlparse(_gl_web_base).hostname or "gitlab.com"
+    used = {
+        "explicit": "--gitlab-token / GITLAB_API_TOKEN",
+        "git-credential": "git credential helper for host=" + host,
+        "anonymous": "anonymous access",
+    }[method]
+    if not_found:
+        what = ("GitLab returned 404: the project was not found, "
+                "or it is private and not accessible")
+    else:
+        what = "GitLab rejected the request (HTTP %d)" % exc.code
+    raise RuntimeError(
+        "error: %s with %s. "
+        "Auth methods, first hit wins: --gitlab-token / "
+        "GITLAB_API_TOKEN, git credential helper for "
+        "host=%s, anonymous access. Fix: create a GitLab personal "
+        "access token with the read_api scope and pass it via "
+        "--gitlab-token, set GITLAB_API_TOKEN, or store it with git "
+        "credential for host=%s."
+        % (what, used, host, host))
+
+
+def gl_get(path, params=None):
+    """Perform one GET against the GitLab REST v4 API.
+
+    Auth follows resolve_gl_auth: a bare explicit token travels as a
+    Private-Token header, HTTP Basic when an email (or git-credential
+    username) is present, then anonymous, which only reads public
+    projects. A 401/403 raises a RuntimeError naming the auth methods
+    tried and how to fix it. All calls are read-only GET requests.
+    """
+    url = _gl_api_base + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "the-daily-commit-generator",
+        },
+    )
+    email, token, method = resolve_gl_auth()
+    if token:
+        if email:
+            pair = base64.b64encode(
+                ("%s:%s" % (email, token)).encode("utf-8")).decode("ascii")
+            req.add_header("Authorization", "Basic " + pair)
+        else:
+            req.add_header("Private-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            _gl_auth_error(exc)
+        raise
+
+
+def gl_paged(path, params, max_pages, ignore_404=False):
+    """Collect up to max_pages from a GitLab paginated endpoint.
+
+    GitLab paginates with ?page=N&per_page=100. Paging stops when a
+    page returns fewer items than requested. With ignore_404, a 404
+    becomes an empty collection.
+    """
+    items = []
+    params = dict(params or {})
+    params["per_page"] = params.get("per_page", 100)
+    for page in range(1, max_pages + 1):
+        params["page"] = page
+        try:
+            data = gl_get(path, params)
+        except urllib.error.HTTPError as exc:
+            if ignore_404 and exc.code == 404:
+                return items
+            raise
+        batch = data if isinstance(data, list) else []
+        if not batch:
+            break
+        items.extend(batch)
+        if len(batch) < params["per_page"]:
+            break
+    return items
+
+
+def gl_stamp(stamp):
+    """Normalize a GitLab ISO 8601 stamp to a UTC "Z" stamp.
+
+    GitLab returns numeric offsets (2026-10-09T12:34:56.000+02:00).
+    month_day() and year_of() slice fixed positions, so converting to
+    UTC first keeps day boundaries consistent. Returns "" for blank
+    input and the input unchanged when it does not parse.
+    """
+    if not stamp:
+        return ""
+    try:
+        parsed = dt.datetime.fromisoformat(stamp)
+    except ValueError:
+        return stamp
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def gl_project_path(namespace, slug):
+    """URL-encoded "namespace/project-slug" for :id path segments.
+
+    GitLab accepts the URL-encoded full path as the project id, so
+    "my-group/my-project" becomes "my-group%2Fmy-project".
+    """
+    return urllib.parse.quote("%s/%s" % (namespace, slug), safe="")
+
+
+def gl_repo_is_private(namespace, slug):
+    """True when the GitLab project is private, cached for the run.
+
+    Shares the run cache with repo_is_private under a "gl:" prefix so
+    GitHub, Bitbucket, and GitLab lookups never collide.
+    """
+    key = "gl:%s/%s" % (namespace, slug)
+    if key not in _repo_private_cache:
+        try:
+            info = gl_get("/projects/%s"
+                          % gl_project_path(namespace, slug))
+            _repo_private_cache[key] = info.get("visibility") == "private"
+        except urllib.error.HTTPError:
+            _repo_private_cache[key] = False
+    return _repo_private_cache[key]
+
+
+def _gl_user_name(user):
+    """Display name from a GitLab user object, or "unknown"."""
+    user = user or {}
+    return user.get("name") or user.get("username") or "unknown"
+
+
+def gl_fetch_commits(namespace, slug, mds, years):
+    """Commits whose date falls on the month-days, via GitLab.
+
+    The commits endpoint lists newest-first with no server-side date
+    filter, so the client filters by month-day and stops paging once
+    commits are older than the oldest needed year. Normalized dicts
+    match the GitHub fetch_commits shape.
+    """
+    mds = set(mds)
+    found = []
+    oldest = min(years)
+    path = ("/projects/%s/repository/commits"
+            % gl_project_path(namespace, slug))
+    for entry in gl_paged(path, {}, MAX_COMMIT_PAGES, ignore_404=True):
+        stamp = gl_stamp(entry.get("committed_date", ""))
+        year = year_of(stamp) if stamp else 0
+        if year and year < oldest:
+            break
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        sha = entry.get("id", "")
+        found.append({
+            "year": year,
+            "day": day,
+            "headline": first_line(entry.get("title")),
+            "byline": entry.get("author_name") or "unknown",
+            "body": sha[:7],
+            "url": entry.get("web_url", ""),
+            "login": "",
+            "author_url": "",
+        })
+    return found
+
+
+def gl_fetch_issues(namespace, slug, mds):
+    """Issues opened or closed on the month-days, via GitLab.
+
+    GitLab exposes real created_at and closed_at timestamps, so no
+    approximation is needed. Normalized dicts match the GitHub
+    fetch_issues shape, with the project-scoped iid stored as
+    "number".
+    """
+    mds = set(mds)
+    seen = set()
+    opened, closed = [], []
+    path = "/projects/%s/issues" % gl_project_path(namespace, slug)
+    for issue in gl_paged(path, {"state": "all", "order_by": "created_at",
+                                 "sort": "desc"},
+                          MAX_ISSUE_PAGES, ignore_404=True):
+        number = issue.get("iid")
+        if number in seen:
+            continue
+        seen.add(number)
+        title = first_line(issue.get("title"))
+        body = first_line(issue.get("description"))
+        byline = _gl_user_name(issue.get("author"))
+        url = issue.get("web_url", "")
+        created_stamp = gl_stamp(issue.get("created_at", ""))
+        created_day = month_day(created_stamp)
+        if created_day in mds:
+            opened.append({
+                "year": year_of(created_stamp),
+                "day": created_day,
+                "headline": "#%s %s" % (number, title),
+                "byline": byline,
+                "body": body,
+                "url": url,
+                "number": number,
+                "comments": issue.get("user_notes_count", 0),
+                "author_url": "",
+            })
+        closed_stamp = gl_stamp(issue.get("closed_at", ""))
+        closed_day = month_day(closed_stamp)
+        if closed_day in mds:
+            closed.append({
+                "year": year_of(closed_stamp),
+                "day": closed_day,
+                "headline": "#%s %s" % (number, title),
+                "byline": byline,
+                "body": body,
+                "url": url,
+                "number": number,
+                "comments": issue.get("user_notes_count", 0),
+                "author_url": "",
+            })
+    return opened, closed
+
+
+def gl_fetch_merged_prs(namespace, slug, mds):
+    """Merge requests merged on the month-days, via GitLab.
+
+    GitLab exposes a real merged_at timestamp, so the merge day is
+    exact. Normalized dicts match the GitHub fetch_merged_prs shape,
+    with the project-scoped iid stored as "number".
+    """
+    mds = set(mds)
+    merged = []
+    path = "/projects/%s/merge_requests" % gl_project_path(namespace, slug)
+    for mr in gl_paged(path, {"state": "merged", "order_by": "updated_at",
+                              "sort": "desc"},
+                       MAX_PULL_PAGES, ignore_404=True):
+        stamp = gl_stamp(mr.get("merged_at", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        number = mr.get("iid")
+        src = mr.get("source_branch")
+        dst = mr.get("target_branch")
+        merged.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": "#%s %s (%s \u2192 %s)" % (
+                number, first_line(mr.get("title")), src or "?",
+                dst or "?"),
+            "byline": _gl_user_name(mr.get("author")),
+            "body": first_line(mr.get("description")),
+            "url": mr.get("web_url", ""),
+            "number": number,
+        })
+    return merged
+
+
+def gl_fetch_releases(namespace, slug, mds):
+    """Releases published on the month-days, via GitLab.
+
+    GitLab has a real releases API with a released_at timestamp.
+    Normalized dicts match the GitHub fetch_releases shape, with
+    tag_name stored as "tag" so release-skipping works for tags.
+    """
+    mds = set(mds)
+    released = []
+    path = "/projects/%s/releases" % gl_project_path(namespace, slug)
+    for rel in gl_paged(path, {}, MAX_RELEASE_PAGES, ignore_404=True):
+        stamp = gl_stamp(rel.get("released_at", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        tag = rel.get("tag_name") or ""
+        released.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": first_line(rel.get("name") or tag),
+            "byline": _gl_user_name(rel.get("author")),
+            "body": first_line(rel.get("description")),
+            "url": ((rel.get("_links") or {}).get("self")) or "",
+            "tag": tag,
+        })
+    return released
+
+
+def gl_fetch_tags(namespace, slug, mds, skip_names):
+    """Tags cut on the month-days, via GitLab.
+
+    GitLab returns each tag's commit (with date and message) inline,
+    so no extra commit lookups are needed. The skip_names contract
+    matches fetch_tags: tags already covered by a release are
+    skipped. Commit links use the instance web base, so self-hosted
+    GitLab works.
+    """
+    mds = set(mds)
+    found = []
+    path = "/projects/%s/repository/tags" % gl_project_path(namespace, slug)
+    for tag in gl_paged(path, {}, 1, ignore_404=True):
+        name = tag.get("name") or ""
+        if not name or name in skip_names:
+            continue
+        commit = tag.get("commit") or {}
+        stamp = gl_stamp(commit.get("created_at", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        sha = commit.get("id", "")
+        found.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": name,
+            "byline": commit.get("author_name") or "unknown",
+            "body": first_line(commit.get("message")),
+            "url": "%s/%s/%s/-/commit/%s" % (
+                _gl_web_base, namespace, slug, sha or name),
+        })
+    return found
+
+
+def gl_fetch_comments(namespace, slug, mds, prs, issues):
+    """Up to five merge-request or issue notes on the month-days.
+
+    GitLab has no project-wide notes endpoint, so this is
+    best-effort: notes are pulled from up to 10 of the
+    already-fetched merge requests and issues, filtered by
+    month-day, and capped at 5 total. System notes are skipped.
+    Normalized dicts match the GitHub fetch_comments shape. The notes
+    API carries no stable web URL, so "url" is "".
+    """
+    mds = set(mds)
+    picked = []
+    project = gl_project_path(namespace, slug)
+    targets = ([("merge_requests", pr.get("number")) for pr in prs[:5]]
+               + [("issues", issue.get("number")) for issue in issues[:5]])
+    for kind, number in targets[:10]:
+        if number is None or len(picked) >= 5:
+            continue
+        path = "/projects/%s/%s/%s/notes" % (project, kind, number)
+        for note in gl_paged(path, {"sort": "desc",
+                                    "order_by": "created_at"},
+                             1, ignore_404=True):
+            if note.get("system"):
+                continue
+            stamp = gl_stamp(note.get("created_at", ""))
+            day = month_day(stamp)
+            if day not in mds:
+                continue
+            picked.append({
+                "year": year_of(stamp),
+                "day": day,
+                "headline": "A voice from the threads",
+                "byline": _gl_user_name(note.get("author")),
+                "body": first_line(note.get("body")),
+                "url": "",
             })
             if len(picked) >= 5:
                 break
@@ -2384,12 +2866,15 @@ def anniversary_batches(items, current_year, span=""):
 
 
 def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
-                 memory=None, edition_key="", bitbucket=False):
+                 memory=None, edition_key="", bitbucket=False, gitlab=False):
     """Edition data across one or more repositories.
 
     With bitbucket=True, repositories are workspace/repo-slug pairs
     read through the Bitbucket Cloud 2.0 API instead of the GitHub
-    API. Everything downstream of the fetch step is identical.
+    API. With gitlab=True, repositories are namespace/project-slug
+    pairs read through the GitLab REST v4 API instead of the
+    GitHub API. Everything downstream of the fetch step is
+    identical.
     """
     current_year = dt.datetime.now().year
     data = {"commits": [], "opened": [], "closed": [], "merged": [],
@@ -2427,6 +2912,39 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
             if not no_comments:
                 data["comments"].extend(tag_repo(
                     bb_fetch_comments(workspace, slug, mds,
+                                      repo_merged, opened), repo))
+            continue
+        if gitlab:
+            namespace, slug = repo.split("/", 1)
+            project = gl_project_path(namespace, slug)
+            try:
+                info = gl_get("/projects/%s" % project)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 404:
+                    _gl_auth_error(exc, not_found=True)
+                raise
+            created.append(year_of(gl_stamp(
+                info.get("created_at", "2020-01-01T00:00:00Z"))))
+            private = private or gl_repo_is_private(namespace, slug)
+            years = list(range(created[-1], current_year + 1))[-MAX_YEARS:]
+            data["commits"].extend(tag_repo(
+                gl_fetch_commits(namespace, slug, mds, years), repo))
+            opened, closed = gl_fetch_issues(namespace, slug, mds)
+            data["opened"].extend(tag_repo(opened, repo))
+            data["closed"].extend(tag_repo(closed, repo))
+            repo_merged = tag_repo(gl_fetch_merged_prs(namespace, slug, mds),
+                                   repo)
+            data["merged"].extend(repo_merged)
+            repo_releases = tag_repo(
+                gl_fetch_releases(namespace, slug, mds), repo)
+            data["releases"].extend(repo_releases)
+            data["tags"].extend(tag_repo(
+                gl_fetch_tags(namespace, slug, mds,
+                              {r["tag"] for r in repo_releases if r["tag"]}),
+                repo))
+            if not no_comments:
+                data["comments"].extend(tag_repo(
+                    gl_fetch_comments(namespace, slug, mds,
                                       repo_merged, opened), repo))
             continue
         info = api_get("/repos/%s" % repo)
@@ -2803,6 +3321,18 @@ def main(argv=None):
     parser.add_argument("--bitbucket-email", default="",
                         help="Bitbucket account email for HTTP Basic auth "
                              "(default: BITBUCKET_EMAIL env)")
+    parser.add_argument("--gitlab-token", default="",
+                        help="GitLab personal access token (default: "
+                             "GITLAB_API_TOKEN env). With --gitlab-email, "
+                             "used as the password over HTTP Basic; "
+                             "otherwise sent as a Private-Token header")
+    parser.add_argument("--gitlab-email", default="",
+                        help="GitLab account email for HTTP Basic auth "
+                             "(default: GITLAB_EMAIL env)")
+    parser.add_argument("--gitlab-url", default="",
+                        help="GitLab instance base URL for self-hosted "
+                             "servers (default: GITLAB_URL env or "
+                             "https://gitlab.com)")
     args = parser.parse_args(argv)
 
     if args.author and args.repos:
@@ -2822,6 +3352,14 @@ def main(argv=None):
             if "/" not in repo:
                 parser.error("--platform bitbucket needs repositories as "
                              "workspace/repo-slug, got %r" % repo)
+    if args.platform == "gitlab" and args.author:
+        parser.error("--platform gitlab does not support --author: "
+                     "author mode needs the GitHub search API")
+    if args.platform == "gitlab":
+        for repo in args.repos:
+            if "/" not in repo:
+                parser.error("--platform gitlab needs repositories as "
+                             "namespace/project-slug, got %r" % repo)
 
     now = dt.datetime.now()
     if args.date:
@@ -2875,6 +3413,13 @@ def main(argv=None):
                                week_days, ticket_url=args.ticket_url,
                                memory=memory, edition_key=edition_key,
                                bitbucket=True)
+    elif args.platform == "gitlab":
+        resolve_gl_auth(args.gitlab_email, args.gitlab_token,
+                        args.gitlab_url)
+        edition = gather_repos(args.repos, mds, args.no_comments,
+                               week_days, ticket_url=args.ticket_url,
+                               memory=memory, edition_key=edition_key,
+                               gitlab=True)
     else:
         edition = gather_repos(args.repos, mds, args.no_comments,
                                week_days, ticket_url=args.ticket_url,
@@ -2903,9 +3448,12 @@ def main(argv=None):
     script_dir = os.path.dirname(os.path.abspath(__file__))
     with open(os.path.join(script_dir, "template.html"), encoding="utf-8") as f:
         template = f.read()
-    title_link = (_bb_title_link(edition["title"])
-                  if args.platform == "bitbucket" and not args.author
-                  else _title_link(edition["title"]))
+    if args.platform == "bitbucket" and not args.author:
+        title_link = _bb_title_link(edition["title"])
+    elif args.platform == "gitlab" and not args.author:
+        title_link = _gl_title_link(edition["title"], _gl_web_base)
+    else:
+        title_link = _title_link(edition["title"])
     page = (template
             .replace("{{TITLE}}", esc(edition["title"]))
             .replace("{{TITLE_LINK}}", title_link)

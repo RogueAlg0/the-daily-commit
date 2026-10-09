@@ -712,6 +712,7 @@ def author_issue_item(hit, stamp, user, kind, head="?", base="?"):
                                   first_line(hit.get("title")))
     return {
         "year": year_of(stamp),
+        "number": hit.get("number"),
         "headline": headline,
         "byline": "%s · %s" % (user, repo),
         "body": first_line(hit.get("body")),
@@ -1108,6 +1109,24 @@ def new_voices_box(voices, seed=""):
             % (tilt, msg))
     parts.append("</div>")
     return "\n".join(parts)
+
+
+def scatter_charms(sections, charms, seed, keep=2):
+    """Insert charm boxes at seeded random positions in the layout.
+
+    The first `keep` sections stay fixed so the paper still opens
+    the same way; charm boxes land at random positions after that,
+    like filler dropped into a real newspaper. Seeded, so re-renders
+    stay byte-identical.
+    """
+    charms = [c for c in charms if c]
+    if not charms:
+        return sections
+    out = list(sections)
+    rng = random.Random(seed + "-charm-scatter")
+    for charm in charms:
+        out.insert(rng.randint(keep, len(out)), charm)
+    return out
 
 
 def charm_box(title, items, style=""):
@@ -1994,6 +2013,8 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
         section("Issues Closed", data["closed"], brief=True),
         section("Pull Requests Merged", data["merged"], lead=True),
         section("Voices From the Threads", data["comments"]),
+    ]
+    charms = [
         charm_box("Weather", [{"headline": "", "body": weather_text}],
                   style="weather"),
         charm_box("Marriages", marriages, style="marriage"),
@@ -2019,6 +2040,7 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
         anniv = anniversary_batches(all_items, current_year, span="week")
         if anniv:
             sections.insert(2, anniv)
+    sections = scatter_charms(sections, charms, seed)
     body = "\n".join(sections)
     single = len(repos) == 1
     if memory is not None and edition_key:
@@ -2121,6 +2143,8 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
         section("Pull Requests Merged", merged, lead=True),
         section("Issues Closed", closed, brief=True),
         section("Voices From the Threads", comments),
+    ]
+    charms = [
         charm_box("Weather", [{"headline": "", "body": weather_text}],
                   style="weather"),
         charm_box("Marriages", marriages, style="marriage"),
@@ -2137,6 +2161,7 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
                  ("merge", "merges", merges),
                  ("comment", "comments", comments)]
         sections.insert(1, day_by_day(pairs, week_days, span))
+    sections = scatter_charms(sections, charms, seed)
     body = "\n".join(sections)
     if memory is not None and edition_key:
         memory.record(

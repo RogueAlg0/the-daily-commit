@@ -41,6 +41,7 @@ import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
+__version__ = "0.1.0"
 MAX_ISSUE_PAGES = 10
 MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3
@@ -558,6 +559,8 @@ def main(argv=None):
                         help="Publish the edition to here.now anonymously "
                              "and print the shareable link (24-hour expiry, "
                              "no login required)")
+    parser.add_argument("--version", action="version",
+                        version="the-daily-commit " + __version__)
     args = parser.parse_args(argv)
 
     if args.date:

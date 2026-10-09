@@ -1,5 +1,9 @@
 # The Daily Commit
 
+[![Install with apt](https://img.shields.io/badge/apt-install-blue?logo=debian)](https://roguealg0.github.io/the-daily-commit/)
+[![Latest release](https://img.shields.io/github/v/release/RogueAlg0/the-daily-commit)](https://github.com/RogueAlg0/the-daily-commit/releases)
+[![CI](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml/badge.svg)](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml)
+
 Generate a vintage-newspaper "on this day in history" page for any GitHub
 repository, on demand.
 
@@ -13,7 +17,17 @@ and works offline.
 Run it locally whenever you want an edition. Nothing leaves your machine
 unless you choose to share the file.
 
-## Quick start
+## Install
+
+### apt (Debian/Ubuntu)
+
+```sh
+echo "deb [trusted=yes] https://roguealg0.github.io/the-daily-commit/ ./" \
+  | sudo tee /etc/apt/sources.list.d/the-daily-commit.list
+sudo apt update && sudo apt install the-daily-commit
+```
+
+### From source
 
 Python 3.10 or later is required. No dependencies are required.
 

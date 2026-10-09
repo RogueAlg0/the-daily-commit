@@ -1,0 +1,63 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version matches tag
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          grep -q "__version__ = \"$VER\"" generate.py
+      - name: Build .deb
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          bash packaging/build-deb.sh "$VER"
+      - name: Attach .deb to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME}"
+          gh release view "$TAG" >/dev/null 2>&1 \
+            || gh release create "$TAG" --generate-notes
+          gh release upload "$TAG" "the-daily-commit_${VER}_all.deb" --clobber
+
+  apt-repo:
+    needs: build-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Collect .debs from all releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p apt
+          for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+            gh release download "$tag" -p 'the-daily-commit_*_all.deb' -D apt/ || true
+          done
+          ls apt/
+      - name: Build Packages index
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq dpkg-dev
+          cd apt
+          dpkg-scanpackages --multiversion . /dev/null > Packages
+          gzip -9c Packages > Packages.gz
+      - name: Add install page
+        run: cp packaging/apt-index.html apt/index.html
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt
+      - uses: actions/deploy-pages@v4

@@ -3,10 +3,10 @@
 
 Collects everything that happened on one month-day across every year of a
 repository's history: commits, issues opened and closed, pull requests
-merged, releases published, and notable comments. Renders the result as a
-self-contained HTML page styled like a vintage newspaper, with a gossip
-column up front: reverts (reverts of reverts get flagged) and the day's
-most-commented threads.
+merged, releases published, tags cut, and notable comments. Renders the
+result as a self-contained HTML page styled like a vintage newspaper,
+with a gossip column up front: reverts (reverts of reverts get flagged)
+and the day's most-commented threads.
 
 Usage:
     python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
@@ -18,7 +18,7 @@ publishing needs no account and no login. The link is unlisted but anyone
 with the URL can open it, so only share editions you are comfortable
 making visible.
 
-The month-day defaults to today (UTC). The script authenticates with
+The month-day defaults to today (local time). The script authenticates with
 THE_DAILY_COMMIT_TOKEN or GITHUB_TOKEN when set, and otherwise reuses the
 GitHub CLI credential, so anyone logged in with `gh auth login` needs no
 extra setup. Without any credential, the script uses the lower
@@ -46,6 +46,7 @@ MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3
 MAX_COMMENT_PAGES = 2
 MAX_YEARS = 25
+MAX_TAG_DATE_LOOKUPS = 25
 
 
 _cached_token = None
@@ -240,8 +241,47 @@ def fetch_releases(repo, md):
             "byline": (rel.get("author") or {}).get("login") or "unknown",
             "body": first_line(rel.get("body")),
             "url": rel.get("html_url", ""),
+            "tag": rel.get("tag_name") or "",
         })
     return released
+
+
+def fetch_tags(repo, md, skip_names):
+    """Tags cut on month-day, best-effort for the most recent tags.
+
+    The tags API carries no dates, so each tag's commit is resolved with
+    one extra call, bounded by MAX_TAG_DATE_LOOKUPS. Tags that already
+    have a GitHub release are skipped: the release announcement covers
+    them.
+    """
+    found = []
+    tags = api_paged("/repos/%s/tags" % repo, {"per_page": 100}, 1,
+                     ignore_404=True)
+    for tag in tags[:MAX_TAG_DATE_LOOKUPS]:
+        name = tag.get("name") or ""
+        sha = ((tag.get("commit") or {}).get("sha")) or ""
+        if not name or not sha or name in skip_names:
+            continue
+        try:
+            commit = api_get("/repos/%s/commits/%s" % (repo, sha))
+        except urllib.error.HTTPError:
+            continue
+        info = commit.get("commit", {})
+        stamp = ((info.get("committer") or {}).get("date")
+                 or (info.get("author") or {}).get("date"))
+        if month_day(stamp) != md:
+            continue
+        author = ((info.get("author") or {}).get("name")
+                  or (info.get("committer") or {}).get("name")
+                  or "unknown")
+        found.append({
+            "year": year_of(stamp),
+            "headline": name,
+            "byline": author,
+            "body": first_line(info.get("message")),
+            "url": "https://github.com/%s/tree/%s" % (repo, name),
+        })
+    return found
 
 
 def fetch_comments(repo, md):
@@ -350,6 +390,9 @@ def build_lede(repo, md_long, counts, years):
     if counts["releases"]:
         bits.append("%d release%s" % (counts["releases"],
                                       "" if counts["releases"] == 1 else "s"))
+    if counts["tags"]:
+        bits.append("%d tag%s cut" % (counts["tags"],
+                                      "" if counts["tags"] == 1 else "s"))
     if counts["comments"]:
         bits.append("%d notable comment%s" % (
             counts["comments"], "" if counts["comments"] == 1 else "s"))
@@ -422,7 +465,7 @@ def main(argv=None):
         description="Generate an 'on this day' newspaper page for a repo.")
     parser.add_argument("repo", help="Repository as owner/repo")
     parser.add_argument("--date", default="",
-                        help="Month-day as MM-DD (default: today, UTC)")
+                        help="Month-day as MM-DD (default: today, local time)")
     parser.add_argument("--out", default="",
                         help="Output HTML path (default: print a summary)")
     parser.add_argument("--no-comments", action="store_true",
@@ -436,33 +479,37 @@ def main(argv=None):
     if args.date:
         md = args.date
     else:
-        md = dt.datetime.now(dt.timezone.utc).strftime("%m-%d")
+        md = dt.datetime.now().strftime("%m-%d")
     md_long = dt.datetime.strptime(md, "%m-%d").strftime("%B %d")
 
     info = api_get("/repos/%s" % args.repo)
     created_year = year_of(info.get("created_at", "2020-01-01T00:00:00Z"))
-    current_year = dt.datetime.now(dt.timezone.utc).year
+    current_year = dt.datetime.now().year
     years = list(range(created_year, current_year + 1))[-MAX_YEARS:]
 
     commits = fetch_commits(args.repo, md, years)
     opened, closed = fetch_issues(args.repo, md)
     merged = fetch_merged_prs(args.repo, md)
     releases = fetch_releases(args.repo, md)
+    release_tags = {r["tag"] for r in releases if r["tag"]}
+    tags = fetch_tags(args.repo, md, release_tags)
     comments = [] if args.no_comments else fetch_comments(args.repo, md)
 
     counts = {"commits": len(commits), "opened": len(opened),
               "closed": len(closed), "merged": len(merged),
-              "releases": len(releases), "comments": len(comments)}
+              "releases": len(releases), "tags": len(tags),
+              "comments": len(comments)}
     drama = find_reverts(commits) + hottest_threads(opened, closed)
     counts["drama"] = len(drama)
 
     body = "\n".join([
         section("Scandals & Corrections", drama),
+        section("\u2605 Releases", releases),
         section("From the Commit Ledger", commits),
+        section("Tags Cut", tags),
         section("Issues Opened", opened),
         section("Issues Closed", closed),
         section("Pull Requests Merged", merged),
-        section("Releases", releases),
         section("Voices From the Threads", comments),
     ])
     if not body.strip():

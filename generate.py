@@ -1707,6 +1707,33 @@ def day_by_day(pairs, week_days, span):
     return section("Day by Day", items)
 
 
+def anniversary_batches(items, current_year, span=""):
+    """Group items by anniversary: 1, 5, 10, 15, 20, 25 years ago.
+
+    For week mode: "5 Years Ago This Week" batches.
+    Only significant anniversaries get their own section.
+    """
+    if not items:
+        return ""
+    # Milestone anniversaries
+    milestones = {1, 5, 10, 15, 20, 25}
+    by_anniversary = {}
+    for item in items:
+        years_ago = current_year - item.get("year", current_year)
+        if years_ago in milestones:
+            by_anniversary.setdefault(years_ago, []).append(item)
+    if not by_anniversary:
+        return ""
+    parts = []
+    for years_ago in sorted(by_anniversary.keys()):
+        batch = by_anniversary[years_ago]
+        label = "%d Year%s Ago" % (years_ago, "s" if years_ago != 1 else "")
+        if span == "week":
+            label += " This Week"
+        parts.append(section(label, batch[:10]))  # Cap at 10 per anniversary
+    return "\n".join(parts)
+
+
 def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     """Edition data across one or more repositories."""
     current_year = dt.datetime.now().year
@@ -1805,6 +1832,14 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
                  ("tag", "tags", data["tags"]),
                  ("comment", "comments", data["comments"])]
         sections.insert(1, day_by_day(pairs, week_days, span))
+        # Anniversary batches: group by milestone years ago
+        import datetime
+        current_year = datetime.date.today().year
+        all_items = (data["commits"] + data["opened"] + data["closed"] +
+                     data["merged"] + data["releases"])
+        anniv = anniversary_batches(all_items, current_year, span="week")
+        if anniv:
+            sections.insert(2, anniv)
     body = "\n".join(sections)
     single = len(repos) == 1
     return {

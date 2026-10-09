@@ -38,7 +38,7 @@ the-daily-commit owner/repo --out today.html
 
 | Flag            | Effect                                              |
 |-----------------|-----------------------------------------------------|
-| `--date MM-DD`  | Cover a different month-day (default: today, UTC)   |
+| `--date MM-DD`  | Cover a different month-day (default: today, local time) |
 | `--out FILE`    | Write the HTML page to FILE                         |
 | `--no-comments` | Skip the comments section                           |
 | `--share`       | Publish the edition to here.now anonymously and print the shareable link (24-hour expiry, no login) |
@@ -70,7 +70,10 @@ client side:
 - Pull requests: pages through closed pull requests and keeps the ones with
   a merge date on the month-day.
 - Releases: pages through releases and keeps the ones published on the
-  month-day.
+  month-day. They render in a starred section near the front.
+- Tags: pages through tags and resolves each tag's commit date (one call
+  per tag, at most 25, most recent first). Tags that already have a GitHub
+  release are skipped. Best-effort for repositories with many tags.
 - Comments: scans recent issue comments and keeps up to five written on the
   month-day.
 

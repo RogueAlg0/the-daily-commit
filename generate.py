@@ -356,6 +356,83 @@ def find_reverts(commits):
     return drama
 
 
+LAUGH_TOKENS = ("haha", "lol", "lmao", "rofl", "hehe", "ha ha")
+OOPS_TOKENS = ("oops", "woops", "oopsie", "uh oh", "my bad", "my fault")
+SPICY_TOKENS = ("wtf", "damn", "dammit", "urgent", "asap", "sorry",
+                "please", "broken", "yolo")
+
+
+def has_emoji(text):
+    """True when text contains an emoji-range character."""
+    return any(
+        0x1F300 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF
+        or 0xFE00 <= code <= 0xFE0F
+        for code in map(ord, text))
+
+
+def quote_score(text):
+    """Heuristic funniness score for one commit message or comment line."""
+    if not text:
+        return 0
+    low = text.lower()
+    if low.startswith("merge ") or low.startswith("revert "):
+        return 0
+    score = 0
+    if any(t in low for t in LAUGH_TOKENS):
+        score += 3
+    if any(t in low for t in OOPS_TOKENS):
+        score += 3
+    if any(t in low for t in SPICY_TOKENS):
+        score += 2
+    if has_emoji(text):
+        score += 2
+    score += min(text.count("!"), 3)
+    score += min(text.count("?"), 2)
+    if '"' in text or "\u201c" in text:
+        score += 1
+    if any(w.isalpha() and w.isupper() and len(w) >= 4
+           for w in text.split()):
+        score += 2
+    if len(text) < 15:
+        score -= 1
+    return score
+
+
+def find_quote(commits, comments, minimum=5):
+    """The day's most quotable line, with its author.
+
+    Returns None when nothing clears the bar: a forced funny quote is
+    worse than no quote at all.
+    """
+    best = None
+    best_score = 0
+    for item in commits:
+        scored = quote_score(item["headline"])
+        if scored > best_score:
+            best = {"text": item["headline"], "author": item["byline"],
+                    "url": item["url"]}
+            best_score = scored
+    for item in comments:
+        scored = quote_score(item["body"])
+        if scored > best_score:
+            best = {"text": item["body"], "author": item["byline"],
+                    "url": item["url"]}
+            best_score = scored
+    return best if best_score >= minimum else None
+
+
+def pullquote(quote):
+    """A pull-quote box with attributed author, or "" when quoteless."""
+    if not quote:
+        return ""
+    return (
+        '<aside class="pullquote">\n'
+        "  <p>%s</p>\n"
+        '  <div class="who">&mdash; %s</div>\n'
+        "</aside>"
+    ) % (esc(quote["text"]), esc(quote["author"]))
+
+
 def hottest_threads(opened, closed, limit=5, minimum=5):
     """The day's most-commented issues, deduped and hottest first."""
     seen = {}
@@ -501,8 +578,10 @@ def main(argv=None):
               "comments": len(comments)}
     drama = find_reverts(commits) + hottest_threads(opened, closed)
     counts["drama"] = len(drama)
+    quote = find_quote(commits, comments)
 
     body = "\n".join([
+        pullquote(quote),
         section("Scandals & Corrections", drama),
         section("\u2605 Releases", releases),
         section("From the Commit Ledger", commits),

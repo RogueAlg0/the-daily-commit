@@ -76,7 +76,12 @@ client side:
 
 `template.html` holds the newspaper layout and CSS. `generate.py` fills in
 the title, dateline, lede paragraph, and article sections. All repository
-content is HTML-escaped before rendering.
+content is HTML-escaped before rendering. Each section shows at most 25
+articles; longer sections note how many more wait in the archives.
+
+The front page carries a gossip column, "Scandals & Corrections": revert
+commits (a revert of a revert is flagged as such) and the day's
+most-commented issue threads.
 
 ## Sharing an edition
 

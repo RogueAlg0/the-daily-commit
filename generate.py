@@ -1065,7 +1065,7 @@ def overheard_box(quips):
         if " · " in who:
             who = who.split(" · ", 1)[0]
         parts.append(
-            '<div class="quip">"%s" <span class="who">— %s</span></div>'
+            '<div class="quip">"%s" <span class="who">&mdash; %s</span></div>'
             % (esc(item["headline"]), esc(who)))
     parts.append("</div>")
     return "\n".join(parts)

@@ -3,7 +3,7 @@ name: publish
 on:
   push:
     tags:
-      - "v*"
+      - "tdc*"
 
 jobs:
   build-deb:
@@ -14,17 +14,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check version matches tag
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${GITHUB_REF_NAME#tdc}"
           grep -q "__version__ = \"$VER\"" generate.py
       - name: Build .deb
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${GITHUB_REF_NAME#tdc}"
           bash packaging/build-deb.sh "$VER"
       - name: Attach .deb to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
+          VER="${GITHUB_REF_NAME#tdc}"
           TAG="${GITHUB_REF_NAME}"
           gh release view "$TAG" >/dev/null 2>&1 \
             || gh release create "$TAG" --generate-notes

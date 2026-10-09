@@ -1,0 +1,14 @@
+Source: the-daily-commit
+Section: utils
+Priority: optional
+Maintainer: RogueAlg0
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: the-daily-commit
+Architecture: all
+Depends: python3
+Description: Vintage-newspaper "on this day" pages for GitHub repositories
+ Generate a vintage-newspaper "on this day in history" page for any
+ GitHub repository, on demand. No dependencies beyond Python 3.

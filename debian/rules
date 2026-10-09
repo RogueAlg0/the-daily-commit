@@ -1,0 +1,10 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_install:
+	mkdir -p debian/the-daily-commit/usr/share/the-daily-commit
+	mkdir -p debian/the-daily-commit/usr/bin
+	cp generate.py template.html debian/the-daily-commit/usr/share/the-daily-commit/
+	printf '#!/bin/sh\nexec python3 /usr/share/the-daily-commit/generate.py "$$@"\n' > debian/the-daily-commit/usr/bin/the-daily-commit
+	chmod 755 debian/the-daily-commit/usr/bin/the-daily-commit

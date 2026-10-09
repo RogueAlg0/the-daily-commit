@@ -1130,12 +1130,24 @@ def charm_box(title, items, style=""):
     return "\n".join(parts)
 
 
-def curate_drama(candidates_by_type, limit=5, seed=""):
+def quip_text(item):
+    """The stable identity string of a quip item for memory hashing."""
+    return item.get("headline", "")
+
+
+def curate_drama(candidates_by_type, limit=5, seed="", memory=None,
+                 within=6, current_key=""):
     """A newspaper editor, not a firehose.
 
     Takes dict of {type_name: [items]}, picks up to `limit` total,
     spreading picks across types for variety. Seeded for consistency:
     the same edition shows the same selection. Random, but respectful.
+
+    When `memory` (an EditionMemory) is given, quips seen in recent
+    editions sort after fresh ones, so repeats fade without ever
+    forcing an empty pick: if every candidate was seen, the least
+    stale ones still run. `current_key` excludes the edition being
+    rendered, so re-renders stay byte-identical.
     """
     import random
     rng = random.Random(seed)
@@ -1146,6 +1158,13 @@ def curate_drama(candidates_by_type, limit=5, seed=""):
     pools = {t: list(items) for t, items in candidates_by_type.items()}
     for t in pools:
         rng.shuffle(pools[t])
+        if memory is not None:
+            # Stable partition: seen quips sink to the front so the
+            # pop() below takes fresh ones first. Falls back to seen
+            # ones when the pool of fresh quips runs dry.
+            pools[t].sort(key=lambda item: memory.seen_quip(
+                quip_text(item), within=within, exclude_key=current_key),
+                reverse=True)
     while len(picked) < limit:
         progressed = False
         for t in types:
@@ -1361,16 +1380,29 @@ def find_new_voices(commits):
 class EditionMemory:
     """Lean cross-edition memory. Never bloats.
 
-    Stores only hashes and counters, not full text.
-    Auto-prunes to last 10 editions. Max ~2KB on disk.
+    Stores only hashes and counters, never full text. Bounded to
+    MAX_EDITIONS entries; each entry holds at most MAX_QUIPS quip
+    hashes, MAX_ADS ad hashes, and MAX_CONTRIBUTORS contributor
+    hashes. record() is idempotent per edition key: re-rendering
+    the same edition updates its entry in place instead of
+    appending a duplicate.
     """
     MAX_EDITIONS = 10
+    # Caps chosen so the file can never bloat: 5 quip hashes (curate
+    # picks at most 5), 3 ad hashes (3 ads per edition), 10 contributor
+    # hashes, everything else hashed to 8 chars. Worst case measured
+    # at 2,494 bytes.
+    MAX_QUIPS = 5
+    MAX_ADS = 3
+    MAX_CONTRIBUTORS = 10
     FILENAME = "editions.json"
 
     def __init__(self, path=None):
         import os
-        self.path = path or os.path.join(
-            os.path.dirname(__file__), self.FILENAME)
+        if path is None:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            path = os.path.join(script_dir, self.FILENAME)
+        self.path = path
         self.data = {"editions": []}
         self._load()
 
@@ -1380,53 +1412,74 @@ class EditionMemory:
             try:
                 with open(self.path) as f:
                     self.data = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (json.JSONDecodeError, OSError, ValueError):
                 self.data = {"editions": []}
+        if not isinstance(self.data.get("editions"), list):
+            self.data = {"editions": []}
 
     def _save(self):
-        import json
-        # Prune to last N before saving
+        import json, os
+        # Prune to last N before saving.
         self.data["editions"] = self.data["editions"][-self.MAX_EDITIONS:]
-        with open(self.path, "w") as f:
+        tmp = self.path + ".tmp"
+        with open(tmp, "w") as f:
             json.dump(self.data, f, separators=(",", ":"))
+        os.replace(tmp, self.path)
 
     def _hash(self, text):
         import hashlib
-        return hashlib.md5(text.encode()).hexdigest()[:8]
+        return hashlib.md5(text.encode("utf-8")).hexdigest()[:8]
 
-    def record(self, quips=(), ads=(), notes=(), contributors=(),
+    def _recent(self, within, exclude_key=""):
+        editions = self.data["editions"][-within:]
+        if exclude_key:
+            kh = self._hash(exclude_key)
+            editions = [e for e in editions if e.get("k") != kh]
+        return editions
+
+    def record(self, key, quips=(), ads=(), contributors=(),
                lead_headline=""):
-        """Record one edition. All inputs are strings; we store hashes."""
+        """Record one edition. All inputs are strings; we store hashes.
+
+        Re-rendering the same edition key updates its entry in place,
+        so regeneration stays byte-identical.
+        """
         edition = {
-            "q": [self._hash(q) for q in quips[:10]],
-            "a": [self._hash(a) for a in ads[:10]],
-            "n": [self._hash(n) for n in notes[:10]],
-            "c": list(set(contributors))[:20],  # logins, not hashes (short)
+            "k": self._hash(key),
+            "q": [self._hash(q) for q in quips[:self.MAX_QUIPS]],
+            "a": [self._hash(a) for a in ads[:self.MAX_ADS]],
+            # Hashed logins, sorted for stable output across processes.
+            "c": sorted({self._hash(c) for c in contributors if c})[
+                :self.MAX_CONTRIBUTORS],
             "l": self._hash(lead_headline) if lead_headline else "",
         }
+        kh = edition["k"]
+        self.data["editions"] = [
+            e for e in self.data["editions"] if e.get("k") != kh]
         self.data["editions"].append(edition)
         self._save()
 
-    def seen_quip(self, quip_text, within=6):
+    def seen_quip(self, quip_text, within=6, exclude_key=""):
         """Has this quip appeared in the last N editions?"""
         h = self._hash(quip_text)
-        for e in self.data["editions"][-within:]:
+        for e in self._recent(within, exclude_key):
             if h in e.get("q", []):
                 return True
         return False
 
-    def seen_ad(self, ad_text, within=6):
+    def seen_ad(self, ad_text, within=6, exclude_key=""):
         h = self._hash(ad_text)
-        for e in self.data["editions"][-within:]:
+        for e in self._recent(within, exclude_key):
             if h in e.get("a", []):
                 return True
         return False
 
     def contributor_streak(self, login):
         """How many recent editions featured this contributor?"""
+        lh = self._hash(login)
         count = 0
         for e in reversed(self.data["editions"]):
-            if login in e.get("c", []):
+            if lh in e.get("c", []):
                 count += 1
             else:
                 break
@@ -1465,36 +1518,45 @@ def repo_weather(commits, merges, issues):
     return ", ".join(parts) + "."
 
 
-def marriage_announcements(merges):
-    """Merged branches as wedding announcements."""
+def marriage_announcements(merges, seed=""):
+    """Merged branches as wedding announcements.
+
+    Each gets a different ceremony variant, picked with the edition
+    seed. Hotfix branches get the rushed chapel line.
+    """
     if not merges:
         return []
+    import random, re
+    rng = random.Random(seed + "-marriages")
+    ceremonies = [
+        "In a beautiful ceremony, branch '%s' was joined in holy matrimony to main.",
+        "Vows were exchanged at the registry office as '%s' wed main.",
+        "In a 2am elopement, '%s' ran away with main. No one was surprised.",
+        "Before the CI congregation, '%s' renewed its vows with main.",
+        "In a rushed chapel ceremony between rebases, '%s' married main.",
+    ]
     announcements = []
     for m in merges[:5]:
-        # Extract branch names from merge message
         msg = m["headline"]
-        # "Merge pull request #123 from user/branch" or "Merge branch 'x'"
-        import re
         match = re.search(r"from \S+/(\S+)", msg)
         if match:
             branch = match.group(1)
-            announcements.append({
-                "headline": "%s weds main" % branch,
-                "byline": m["byline"],
-                "body": "In a beautiful ceremony, branch '%s' was joined "
-                        "in holy matrimony to main." % branch,
-                "url": m["url"],
-            })
         else:
             match = re.search(r"Merge branch '([^']+)'", msg)
-            if match:
-                branch = match.group(1)
-                announcements.append({
-                    "headline": "%s weds %s" % (branch, "main"),
-                    "byline": m["byline"],
-                    "body": "Branch '%s' and main are now one." % branch,
-                    "url": m["url"],
-                })
+            if not match:
+                continue
+            branch = match.group(1)
+        # Hotfix branches get the rushed chapel
+        if "hotfix" in branch.lower():
+            body = ceremonies[4] % branch
+        else:
+            body = rng.choice(ceremonies) % branch
+        announcements.append({
+            "headline": "%s weds main" % branch,
+            "byline": m["byline"],
+            "body": body,
+            "url": m["url"],
+        })
     return announcements
 
 
@@ -1546,10 +1608,26 @@ def missed_connections(issues_opened, issues_closed):
     return missed
 
 
-def classified_ads(seed=""):
-    """Vintage-style fake classified ads. Pure template, no data."""
-    import random
-    rng = random.Random(seed)
+def classified_ads(seed="", md=""):
+    """Vintage-style fake classified ads. Weekly campaigns.
+
+    Seeded by calendar week, not edition date: the same 3 ads run
+    all week, then rotate as a block. The merge-conflict ad is an
+    anchor advertiser with high rebook probability. The week comes
+    from the edition month-day on a fixed reference year, so
+    historical editions show their own week's campaign; without md
+    it falls back to the current week. The edition seed salts the
+    draw so each paper gets its own campaign.
+    """
+    import random, datetime
+    if md:
+        month, day = int(md[:2]), int(md[3:5])
+        year, week, _ = datetime.date(2024, month, day).isocalendar()
+    else:
+        today = datetime.date.today()
+        year, week, _ = today.isocalendar()
+    week_seed = "%d-W%02d" % (year, week)
+    rng = random.Random("%s|%s" % (week_seed, seed))
     ads = [
         "WANTED: Meaningful commit messages. No 'fix stuff'. Reward offered.",
         "FOR SALE: One slightly used merge conflict. As-is. No returns.",
@@ -1560,9 +1638,23 @@ def classified_ads(seed=""):
         "WANTED: A bug that reproduces consistently. Generous reward.",
         "FOR SALE: Slightly used keyboard. Keys W, A, S, D worn out.",
     ]
-    selected = rng.sample(ads, min(3, len(ads)))
-    return [{"headline": "Classified", "byline": "", "body": ad, "url": ""}
-            for ad in selected]
+    # Anchor advertiser: 80% chance the merge-conflict ad runs.
+    anchor = ads[1]
+    pool = [a for a in ads if a != anchor]
+    selected = rng.sample(pool, 2)
+    if rng.random() < 0.8:
+        selected.append(anchor)
+    else:
+        # Draw from what is left so no ad runs twice.
+        selected.append(rng.choice([a for a in pool
+                                   if a not in selected]))
+    rng.shuffle(selected)
+    items = []
+    for ad in selected[:3]:
+        keyword = ad.split(":", 1)[0].strip().title()
+        items.append({"headline": keyword, "byline": "",
+                      "body": ad, "url": ""})
+    return items
 
 
 def build_docket(items, ticket_url_base=""):
@@ -1815,7 +1907,8 @@ def anniversary_batches(items, current_year, span=""):
     return "\n".join(parts)
 
 
-def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
+def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
+                 memory=None, edition_key=""):
     """Edition data across one or more repositories."""
     current_year = dt.datetime.now().year
     data = {"commits": [], "opened": [], "closed": [], "merged": [],
@@ -1852,7 +1945,8 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(data["commits"])
     candidates["revert"] = find_reverts(data["commits"])
-    quips = curate_drama(candidates, limit=5, seed=seed)
+    quips = curate_drama(candidates, limit=5, seed=seed, memory=memory,
+                         current_key=edition_key)
     for q in quips:
         q["quip_type"] = "quip"
     drama = (quips + hottest_threads(data["opened"], data["closed"]))
@@ -1878,10 +1972,10 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     seed = "%s-%s" % (mds[0] if mds else "", span)
     # Charm sections
     weather_text = repo_weather(data["commits"], merges, data["opened"])
-    marriages = marriage_announcements(merges)
+    marriages = marriage_announcements(merges, seed=seed)
     letters = letters_to_editor(data["commits"])
     missed = missed_connections(data["opened"], data["closed"])
-    ads = classified_ads(seed=seed)
+    ads = classified_ads(seed=seed, md=mds[0] if mds else "")
     sections = [
         pullquote(quote),
         new_voices_box(voices, seed=seed),
@@ -1923,6 +2017,15 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
             sections.insert(2, anniv)
     body = "\n".join(sections)
     single = len(repos) == 1
+    if memory is not None and edition_key:
+        memory.record(
+            edition_key,
+            quips=[quip_text(q) for q in quips],
+            ads=[a.get("headline", "") for a in ads],
+            contributors=[c.get("login") or c.get("byline", "")
+                          for c in data["commits"]],
+            lead_headline=(quote or {}).get("text", ""),
+        )
     return {
         "title": repos[0] if single else ", ".join(repos),
         "label": repos[0] if single else "%d repositories" % len(repos),
@@ -1935,7 +2038,8 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     }
 
 
-def gather_author(user, mds, week_days=(), ticket_url=""):
+def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
+                  edition_key=""):
     """Edition data for one user's full activity on the month-days.
 
     Commits, issues and PRs opened, PRs merged, issues closed, and the
@@ -1973,7 +2077,8 @@ def gather_author(user, mds, week_days=(), ticket_url=""):
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(commits)
     candidates["revert"] = find_reverts(commits)
-    quips = curate_drama(candidates, limit=5, seed=seed)
+    quips = curate_drama(candidates, limit=5, seed=seed, memory=memory,
+                         current_key=edition_key)
     for q in quips:
         q["quip_type"] = "quip"
     drama = (quips + hottest_threads(opened + prs_opened, closed))
@@ -2016,6 +2121,14 @@ def gather_author(user, mds, week_days=(), ticket_url=""):
                  ("comment", "comments", comments)]
         sections.insert(1, day_by_day(pairs, week_days, span))
     body = "\n".join(sections)
+    if memory is not None and edition_key:
+        memory.record(
+            edition_key,
+            quips=[quip_text(q) for q in quips],
+            contributors=[c.get("login") or c.get("byline", "")
+                          for c in commits],
+            lead_headline=(quote or {}).get("text", ""),
+        )
     return {
         "title": user,
         "label": user,
@@ -2191,12 +2304,26 @@ def main(argv=None):
         week_days = []
         md_long = target.strftime("%B %d")
 
+    # Cross-edition memory: deprioritizes quips that ran recently.
+    # The state file lives next to generate.py locally; in CI the
+    # daily workflow restores it from the published site before the
+    # build and republishes the updated file with the site.
+    memory = EditionMemory()
+    key_suffix = ":week" if args.week else ""
+    if args.author:
+        edition_key = "author:%s:%s%s" % (args.author, mds[0], key_suffix)
+    else:
+        edition_key = "repo:%s:%s%s" % (",".join(args.repos), mds[0],
+                                        key_suffix)
+
     if args.author:
         edition = gather_author(args.author, mds, week_days,
-                                ticket_url=args.ticket_url)
+                                ticket_url=args.ticket_url,
+                                memory=memory, edition_key=edition_key)
     else:
         edition = gather_repos(args.repos, mds, args.no_comments,
-                               week_days, ticket_url=args.ticket_url)
+                               week_days, ticket_url=args.ticket_url,
+                               memory=memory, edition_key=edition_key)
 
     if args.card:
         link = ("github.com/%s" % args.author if args.author

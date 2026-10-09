@@ -10,6 +10,11 @@ SITE="site"
 rm -rf "$SITE"
 mkdir -p "$SITE/apt" "$SITE/daily" "$SITE/author"
 
+# Restore cross-edition memory from the published site. A missing
+# file (first run) simply means an empty memory.
+curl -fsSL https://roguealg0.github.io/the-daily-commit/editions.json \
+  -o editions.json 2>/dev/null || true
+
 # apt repository from every release .deb
 for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
   gh release download "$tag" -p 'the-daily-commit_*_all.deb' \
@@ -59,4 +64,8 @@ done
 printf '{"dates": [%s]}\n' "$(echo "$ADATES" | sed 's/,$//')" \
   > "$SITE/author/latest.json"
 cp packaging/author-index.html "$SITE/author/index.html"
+# Publish the updated cross-edition memory for tomorrow's build.
+if [ -f editions.json ]; then
+  cp editions.json "$SITE/editions.json"
+fi
 echo "site built in $SITE/"

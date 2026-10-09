@@ -9,54 +9,95 @@
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400&family=Caveat:wght@500;700&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400&family=Caveat:wght@500;700&family=IM+Fell+English:ital@0;1&display=swap');
   :root {
-    --paper: #f8f5ec;
-    --ink: #141210;
-    --faint: #5c564a;
-    --rule: #b8b0a0;
+    --paper: #f4f1e6;
+    --ink: #1a1712;
+    --faint: #6b6355;
+    --rule: #c9c0a8;
   }
   * { box-sizing: border-box; }
   body {
-    background: var(--paper);
+    background: #e8e0cc;
+    background-image:
+      radial-gradient(ellipse at 20% 30%, rgba(139,119,82,0.08) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 70%, rgba(139,119,82,0.06) 0%, transparent 50%);
     color: var(--ink);
     font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
     margin: 0;
-    padding: 0;
+    padding: 1rem 0;
     line-height: 1.5;
   }
   .page {
     max-width: 1100px;
     margin: 0 auto;
-    padding: 1rem 2rem 3rem;
+    padding: 2rem 2.5rem 3rem;
+    background: var(--paper);
+    box-shadow: 0 4px 24px rgba(0,0,0,0.15), 0 1px 3px rgba(0,0,0,0.1);
+    position: relative;
+  }
+  .page::before {
+    content: "";
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+    pointer-events: none;
   }
   .masthead {
     text-align: center;
-    border-bottom: 3px double var(--ink);
-    padding: 1.2rem 0 0.8rem;
-    margin-bottom: 0.3rem;
+    border-bottom: 4px double var(--ink);
+    border-top: 1px solid var(--ink);
+    padding: 1.5rem 0 1rem;
+    margin-bottom: 0.2rem;
+    position: relative;
   }
+  .masthead::before,
+  .masthead::after {
+    content: "❦";
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 1.5rem;
+    color: var(--faint);
+  }
+  .masthead::before { left: 1rem; }
+  .masthead::after { right: 1rem; }
   .masthead .kicker {
     font-variant: small-caps;
-    letter-spacing: 0.4em;
-    font-size: 0.75rem;
+    letter-spacing: 0.5em;
+    font-size: 0.7rem;
     color: var(--faint);
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.4rem;
   }
   .masthead h1 {
-    font-family: "Playfair Display", Georgia, serif;
-    font-weight: 900;
-    font-size: 4.2rem;
+    font-family: "IM Fell English", "Playfair Display", Georgia, serif;
+    font-weight: 400;
+    font-size: 4.8rem;
     margin: 0;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.02em;
     line-height: 1;
   }
   .masthead .repo {
     font-variant: small-caps;
-    letter-spacing: 0.25em;
-    font-size: 0.95rem;
-    margin-top: 0.4rem;
+    letter-spacing: 0.3em;
+    font-size: 0.9rem;
+    margin-top: 0.5rem;
     color: var(--faint);
+  }
+  .dateline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--ink);
+    padding: 0.4rem 0;
+    margin-bottom: 1.2rem;
+    font-variant: small-caps;
+    font-size: 0.8rem;
+    letter-spacing: 0.15em;
+    color: var(--faint);
+  }
+  .dateline .price {
+    font-style: italic;
   }
   .masthead .repo a {
     color: var(--faint);
@@ -276,6 +317,62 @@
   }
   .charm-box .item .headline {
     font-weight: bold;
+  }
+  /* Weather: like a forecast */
+  .charm-weather {
+    background: #e3f2fd;
+    border: 2px solid #1976d2;
+    border-radius: 8px;
+    text-align: center;
+    font-family: "Source Serif 4", Georgia, serif;
+  }
+  .charm-weather h4::before {
+    content: "☀ ";
+  }
+  /* Marriages: like a wedding invitation */
+  .charm-marriage {
+    text-align: center;
+    border: none;
+    border-top: 3px double var(--ink);
+    border-bottom: 3px double var(--ink);
+    font-family: "Playfair Display", Georgia, serif;
+    font-style: italic;
+  }
+  .charm-marriage h4::before {
+    content: "💒 ";
+  }
+  /* Letters: like a letter */
+  .charm-letter {
+    background: #fffef7;
+    border-left: 4px solid var(--ink);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-style: italic;
+  }
+  /* Missed Connections: like Craigslist */
+  .charm-missed {
+    font-family: "Courier New", monospace;
+    background: #f5f5f5;
+    border: 1px dashed var(--ink);
+  }
+  .charm-missed h4 {
+    font-family: "Courier New", monospace;
+    text-transform: uppercase;
+  }
+  /* Classifieds: dense small text */
+  .charm-classified {
+    font-size: 0.75rem;
+    line-height: 1.4;
+    column-count: 2;
+    column-gap: 1rem;
+  }
+  .charm-classified h4 {
+    column-span: all;
+  }
+  .charm-classified .item {
+    break-inside: avoid;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px dotted var(--faint);
   }
   article h3 {
     font-size: 1rem;

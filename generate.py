@@ -1106,11 +1106,18 @@ def new_voices_box(voices, seed=""):
     return "\n".join(parts)
 
 
-def charm_box(title, items):
-    """A small charm section: weather, marriages, letters, etc."""
+def charm_box(title, items, style=""):
+    """A charm section with its own personality.
+
+    Each type gets a distinct visual style, not just a boring box.
+    Style is a CSS class suffix: weather, marriage, letter, missed, classified.
+    """
     if not items:
         return ""
-    parts = ['<div class="charm-box">', "<h4>%s</h4>" % esc(title)]
+    cls = "charm-box"
+    if style:
+        cls += " charm-%s" % style
+    parts = ['<div class="%s">' % cls, "<h4>%s</h4>" % esc(title)]
     for item in items:
         parts.append('<div class="item">')
         if item.get("headline"):
@@ -1781,11 +1788,12 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
         section("Issues Closed", data["closed"], brief=True),
         section("Pull Requests Merged", data["merged"], lead=True),
         section("Voices From the Threads", data["comments"]),
-        charm_box("Weather", [{"headline": "", "body": weather_text}]),
-        charm_box("Marriages", marriages),
-        charm_box("Letters to the Editor", letters),
-        charm_box("Missed Connections", missed),
-        charm_box("Classifieds", ads),
+        charm_box("Weather", [{"headline": "", "body": weather_text}],
+                  style="weather"),
+        charm_box("Marriages", marriages, style="marriage"),
+        charm_box("Letters to the Editor", letters, style="letter"),
+        charm_box("Missed Connections", missed, style="missed"),
+        charm_box("Classifieds", ads, style="classified"),
     ]
     if week_days:
         pairs = [("commit", "commits", data["commits"]),

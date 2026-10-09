@@ -408,6 +408,9 @@ def main(argv=None):
     page = (template
             .replace("{{TITLE}}", esc(args.repo))
             .replace("{{DATELINE}}", esc(md_long))
+            .replace("{{RECORD}}", "Compiled from the private record"
+                     if info.get("private") else
+                     "Compiled from the public record")
             .replace("{{LEDE}}", esc(build_lede(args.repo, md_long, counts,
                                                years)))
             .replace("{{BODY}}", body))

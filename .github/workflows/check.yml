@@ -19,5 +19,5 @@ jobs:
         run: python3 generate.py --help
       - name: Smoke generation
         run: python3 generate.py RogueAlg0/the-daily-commit --date 01-01 --out /tmp/smoke.html
-      - name: Smoke output is a complete page
-        run: grep -q "{{TITLE}}" /tmp/smoke.html && exit 1 || exit 0
+      - name: Smoke output has no unreplaced placeholders
+        run: grep -Eq "{{[A-Z]+}}" /tmp/smoke.html && exit 1 || exit 0

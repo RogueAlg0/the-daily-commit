@@ -102,13 +102,24 @@ def api_get(path, params=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
-def api_paged(path, params, max_pages):
-    """Collect up to max_pages of a paginated endpoint."""
+def api_paged(path, params, max_pages, ignore_404=False):
+    """Collect up to max_pages of a paginated endpoint.
+
+    With ignore_404, a 404 becomes an empty collection. Collection
+    endpoints 404 when the feature is disabled on the repository (for
+    example, pull requests on a mailing-list workflow), which means
+    there is simply nothing to report.
+    """
     items = []
     params = dict(params or {})
     for page in range(1, max_pages + 1):
         params["page"] = page
-        batch = api_get(path, params)
+        try:
+            batch = api_get(path, params)
+        except urllib.error.HTTPError as exc:
+            if ignore_404 and exc.code == 404:
+                return items
+            raise
         if not batch:
             break
         items.extend(batch)
@@ -146,7 +157,8 @@ def fetch_commits(repo, md, years):
             "until": "%d-%sT23:59:59Z" % (year, md),
             "per_page": 100,
         }
-        for commit in api_paged("/repos/%s/commits" % repo, params, 1):
+        for commit in api_paged("/repos/%s/commits" % repo, params, 1,
+                                 ignore_404=True):
             info = commit.get("commit", {})
             author = (info.get("author") or {}).get("name") or "unknown"
             found.append({
@@ -164,7 +176,8 @@ def fetch_issues(repo, md):
     params = {"state": "all", "sort": "created", "direction": "asc",
               "per_page": 100}
     opened, closed = [], []
-    for issue in api_paged("/repos/%s/issues" % repo, params, MAX_ISSUE_PAGES):
+    for issue in api_paged("/repos/%s/issues" % repo, params,
+                             MAX_ISSUE_PAGES, ignore_404=True):
         if "pull_request" in issue:
             continue
         number = issue.get("number")
@@ -194,7 +207,8 @@ def fetch_merged_prs(repo, md):
     params = {"state": "closed", "sort": "updated", "direction": "desc",
               "per_page": 100}
     merged = []
-    for pr in api_paged("/repos/%s/pulls" % repo, params, MAX_PULL_PAGES):
+    for pr in api_paged("/repos/%s/pulls" % repo, params, MAX_PULL_PAGES,
+                          ignore_404=True):
         if month_day(pr.get("merged_at")) != md:
             continue
         merged.append({
@@ -212,7 +226,7 @@ def fetch_releases(repo, md):
     """Releases published on month-day."""
     released = []
     for rel in api_paged("/repos/%s/releases" % repo, {"per_page": 100},
-                         MAX_RELEASE_PAGES):
+                         MAX_RELEASE_PAGES, ignore_404=True):
         stamp = rel.get("published_at") or rel.get("created_at")
         if month_day(stamp) != md:
             continue
@@ -231,7 +245,7 @@ def fetch_comments(repo, md):
     params = {"sort": "created", "direction": "desc", "per_page": 100}
     picked = []
     for comment in api_paged("/repos/%s/issues/comments" % repo, params,
-                             MAX_COMMENT_PAGES):
+                             MAX_COMMENT_PAGES, ignore_404=True):
         if month_day(comment.get("created_at")) != md:
             continue
         picked.append({

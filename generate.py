@@ -363,11 +363,18 @@ SPICY_TOKENS = ("wtf", "damn", "dammit", "urgent", "asap", "sorry",
 
 
 def has_emoji(text):
-    """True when text contains an emoji-range character."""
+    """True when text contains an expressive emoji.
+
+    Leading emoji is usually conventional (gitmoji puts it first), so
+    only emoji past the first word counts. That is where the
+    personality lives.
+    """
+    words = text.split(None, 1)
+    expressive = words[1] if len(words) == 2 else ""
     return any(
         0x1F300 <= code <= 0x1FAFF or 0x2600 <= code <= 0x27BF
         or 0xFE00 <= code <= 0xFE0F
-        for code in map(ord, text))
+        for code in map(ord, expressive))
 
 
 def quote_score(text):

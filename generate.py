@@ -210,6 +210,14 @@ def esc(text):
     return html.escape(text or "", quote=True)
 
 
+def _title_link(title):
+    """Repo title as a hyperlink, when it looks like owner/repo."""
+    if "/" in title and " " not in title:
+        url = "https://github.com/" + title
+        return '<a href="%s">%s</a>' % (esc(url), esc(title))
+    return esc(title)
+
+
 def profile_url(login):
     """GitHub profile URL for a login, or "" when not linkable."""
     if login and login != "unknown" and re.match(r"^[A-Za-z0-9-]+$", login):
@@ -1503,7 +1511,7 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
         section("Scandals & Corrections", drama),
         build_docket(docket_items, ticket_url),
         section("Merges", merges),
-        section("★ Releases", data["releases"]),
+        section("Releases", data["releases"]),
         section("From the Commit Ledger", data["commits"]),
         section("Tags Cut", data["tags"]),
         section("Issues Opened", data["opened"]),
@@ -1818,6 +1826,7 @@ def main(argv=None):
         template = f.read()
     page = (template
             .replace("{{TITLE}}", esc(edition["title"]))
+            .replace("{{TITLE_LINK}}", _title_link(edition["title"]))
             .replace("{{KICKER}}", "A weekly chronicle of repository history"
                      if args.week else "A daily chronicle of repository history")
             .replace("{{DATELINE}}", esc(md_long))

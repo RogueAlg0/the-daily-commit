@@ -152,6 +152,29 @@ Then embed it:
 [![daily commit](card.svg)](https://github.com/USER)
 ```
 
+### Live today page
+
+The site also hosts a live page that needs no build step:
+[roguealg0.github.io/the-daily-commit/live.html](https://roguealg0.github.io/the-daily-commit/live.html)
+
+It fetches today's activity straight from the GitHub API in your
+browser and renders it on the spot. Add `?repo=owner/repo` to read any
+public repository. No GitHub Actions, no cron, no manual rebuilds.
+
+### Ticket keys
+
+Commit messages, PR titles, and branch names often carry ticket keys
+like `PROJ-123`. The paper detects these and groups the day's activity
+by ticket in "The Docket" section, with courtroom flair: the busiest
+case, cold cases reopened after years, and verdicts.
+
+```sh
+the-daily-commit owner/repo --ticket-url https://tracker.example.com/browse
+```
+
+With `--ticket-url`, keys become links to your tracker. Without it,
+keys are still detected and grouped, just not linked.
+
 ## Options
 
 | Flag            | Effect                                              |
@@ -160,6 +183,7 @@ Then embed it:
 | `--out FILE`    | Write the HTML page to FILE                         |
 | `--no-comments` | Skip the comments section                           |
 | `--share`       | Publish the edition to here.now anonymously and print the shareable link (24-hour expiry, no login) |
+| `--ticket-url URL` | Base URL for ticket keys: `ABC-123` becomes a link (Jira, Linear, or any tracker) |
 
 ## Private repositories
 

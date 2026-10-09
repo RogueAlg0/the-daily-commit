@@ -137,6 +137,66 @@
   details.more summary::before { content: "\25BC  "; font-size: 0.7em; }
   details.more[open] summary::before { content: "\25B2  "; }
   article { margin-bottom: 0.9rem; overflow-wrap: break-word; }
+  article.lead-story {
+    column-span: all;
+    border-top: 2px solid var(--ink);
+    border-bottom: 1px solid var(--rule);
+    padding: 1rem 0;
+    margin-bottom: 1.2rem;
+  }
+  article.lead-story h3 {
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 1.8rem;
+    font-weight: 900;
+    line-height: 1.15;
+    margin: 0 0 0.3rem;
+  }
+  article.brief {
+    margin-bottom: 0.4rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px dotted var(--rule);
+  }
+  article.brief h3 {
+    font-size: 0.85rem;
+    font-weight: normal;
+    margin: 0;
+    display: inline;
+  }
+  article.brief .byline {
+    display: inline;
+    font-size: 0.75rem;
+    margin: 0 0 0 0.3rem;
+  }
+  article.brief p { display: none; }
+  .overheard {
+    column-span: all;
+    border: 2px solid var(--ink);
+    padding: 0.8rem 1.2rem;
+    margin: 1rem 0 1.4rem;
+    background: #fffdf5;
+  }
+  .overheard h3 {
+    font-variant: small-caps;
+    letter-spacing: 0.2em;
+    font-size: 0.9rem;
+    text-align: center;
+    margin: 0 0 0.6rem;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.4rem;
+  }
+  .overheard .quip {
+    font-style: italic;
+    font-size: 0.92rem;
+    margin-bottom: 0.5rem;
+    padding-left: 1rem;
+    border-left: 2px solid var(--rule);
+  }
+  .overheard .quip .who {
+    font-style: normal;
+    font-variant: small-caps;
+    font-size: 0.75rem;
+    color: var(--faint);
+  }
   article h3 {
     font-size: 1rem;
     margin: 0 0 0.15rem;

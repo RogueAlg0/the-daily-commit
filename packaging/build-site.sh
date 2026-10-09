@@ -8,7 +8,7 @@ set -eu
 
 SITE="site"
 rm -rf "$SITE"
-mkdir -p "$SITE/apt" "$SITE/daily"
+mkdir -p "$SITE/apt" "$SITE/daily" "$SITE/author"
 
 # apt repository from every release .deb
 for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
@@ -35,4 +35,23 @@ printf '{"dates": [%s]}\n' "$(echo "$DATES" | sed 's/,$//')" \
   > "$SITE/daily/latest.json"
 cp packaging/daily-index.html "$SITE/daily/index.html"
 cp packaging/root-index.html "$SITE/index.html"
+
+# the author's own paper, same three dates, plus a profile stats card
+ADATES=""
+for offset in -1 0 1; do
+  MD=$(date -u -d "$offset day" +%m-%d)
+  ADATES="$ADATES \"$MD\","
+  if [ "$offset" -eq 0 ]; then
+    SUMMARY=$(python3 generate.py --author RogueAlg0 --date "$MD" \
+      --out "$SITE/author/$MD.html")
+    echo "$SUMMARY" | python3 packaging/author-card.py \
+      > "$SITE/author/card.svg"
+  else
+    python3 generate.py --author RogueAlg0 --date "$MD" \
+      --out "$SITE/author/$MD.html" >/dev/null
+  fi
+done
+printf '{"dates": [%s]}\n' "$(echo "$ADATES" | sed 's/,$//')" \
+  > "$SITE/author/latest.json"
+cp packaging/author-index.html "$SITE/author/index.html"
 echo "site built in $SITE/"

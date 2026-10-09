@@ -46,7 +46,6 @@ MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3
 MAX_COMMENT_PAGES = 2
 MAX_YEARS = 25
-MAX_DISPLAY = 25
 
 
 _cached_token = None
@@ -278,16 +277,23 @@ def article(item):
          esc(item["byline"]), esc(str(item["year"])), body)
 
 
-def section(title, items):
+def section(title, items, preview=5):
+    """Render a section showing the first few articles.
+
+    The rest hide behind a <details> expander: pure HTML, no JavaScript,
+    so it works in every sandbox the page might be served from.
+    """
     if not items:
         return ""
     items = sorted(items, key=lambda i: (i["year"], i["headline"]))
-    shown = items[:MAX_DISPLAY]
+    shown, rest = items[:preview], items[preview:]
     parts = ["<section>", "<h2>%s</h2>" % esc(title)]
     parts.extend(article(i) for i in shown)
-    if len(items) > MAX_DISPLAY:
-        parts.append('<p class="quiet">&hellip;and %d more in the archives.</p>'
-                     % (len(items) - MAX_DISPLAY))
+    if rest:
+        parts.append('<details class="more"><summary>Show all %d</summary>'
+                     % len(items))
+        parts.extend(article(i) for i in rest)
+        parts.append("</details>")
     parts.append("</section>")
     return "\n".join(parts)
 

@@ -624,6 +624,17 @@ def section(title, items, preview=5):
     return "\n".join(parts)
 
 
+def hottest_threads(opened, closed, limit=5, minimum=5):
+    """The day's most-commented issues, deduped and hottest first."""
+    seen = {}
+    for item in opened + closed:
+        seen[item["url"]] = item
+    ranked = sorted(
+        (i for i in seen.values() if i.get("comments", 0) >= minimum),
+        key=lambda i: i["comments"], reverse=True)
+    return ranked[:limit]
+
+
 def find_reverts(commits):
     """Revert commits, the closest thing git has to public drama.
 
@@ -728,6 +739,20 @@ def pullquote(quote):
 
 MERGE_PR_RE = re.compile(r"^Merge pull request #(\d+) from (\S+)")
 MERGE_BRANCH_RE = re.compile(r"^Merge branch '([^']+)'( into (\S+))?")
+TICKET_RE = re.compile(r"\b[A-Z]{2,10}-\d{1,5}\b")
+
+
+def find_tickets(text):
+    """Ticket keys (ABC-123) in text, deduplicated and sorted."""
+    return sorted(set(TICKET_RE.findall(text or "")))
+
+
+def ticket_link(key, base_url):
+    """Link to the ticket in the tracker, or the bare key."""
+    if base_url:
+        return '<a href="%s/%s">%s</a>' % (
+            esc(base_url.rstrip("/")), esc(key), esc(key))
+    return esc(key)
 
 
 def find_merges(commits):
@@ -774,7 +799,64 @@ def find_merges(commits):
     return found
 
 
-def hottest_threads(opened, closed, limit=5, minimum=5):
+def build_docket(items, ticket_url_base=""):
+    """Group items by ticket key into a courtroom-style docket.
+
+    Each ticket becomes a case with its exhibits (commits, PRs, issues).
+    Witty labels mark the busiest case, cold cases, and brief appearances.
+    """
+    cases = {}
+    for item in items:
+        text = " ".join([
+            item.get("headline", ""),
+            item.get("body", ""),
+            item.get("branch", ""),
+        ])
+        for key in find_tickets(text):
+            cases.setdefault(key, []).append(item)
+    if not cases:
+        return ""
+    # Busiest case first, then by key.
+    ranked = sorted(cases.items(),
+                    key=lambda kv: (-len(kv[1]), kv[0]))
+    busiest = ranked[0][0] if ranked and len(ranked[0][1]) > 2 else None
+    parts = ["<section>", "<h2>The Docket</h2>"]
+    for key, exhibits in ranked:
+        kinds = {}
+        years = set()
+        for e in exhibits:
+            kinds[e.get("kind", "item")] = \
+                kinds.get(e.get("kind", "item"), 0) + 1
+            if e.get("year"):
+                years.add(e["year"])
+        bits = []
+        for kind in ("commit", "PR", "issue"):
+            n = kinds.get(kind, 0)
+            if n:
+                bits.append("%d %s%s" % (n, kind, "" if n == 1 else "s"))
+        # Witty notes.
+        notes = []
+        if key == busiest:
+            notes.append("Most argued today.")
+        if years and max(years) - min(years) >= 2:
+            notes.append("Reopened after %d years. The file was gathering dust."
+                         % (max(years) - min(years)))
+        elif len(exhibits) == 1:
+            notes.append("A brief appearance before the court.")
+        # Verdict from PR state.
+        if any(e.get("merged") for e in exhibits):
+            notes.append("Case closed.")
+        elif any(e.get("kind") == "PR" for e in exhibits):
+            notes.append("Adjourned.")
+        headline = "Case %s &mdash; %d exhibit%s (%s)." % (
+            ticket_link(key, ticket_url_base),
+            len(exhibits), "" if len(exhibits) == 1 else "s",
+            ", ".join(bits))
+        if notes:
+            headline += " " + " ".join(notes)
+        parts.append("<article>\n  <h3>%s</h3>\n</article>" % headline)
+    parts.append("</section>")
+    return "\n".join(parts)
     """The day's most-commented issues, deduped and hottest first."""
     seen = {}
     for item in opened + closed:
@@ -940,7 +1022,7 @@ def day_by_day(pairs, week_days, span):
     return section("Day by Day", items)
 
 
-def gather_repos(repos, mds, no_comments, week_days=()):
+def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     """Edition data across one or more repositories."""
     current_year = dt.datetime.now().year
     data = {"commits": [], "opened": [], "closed": [], "merged": [],
@@ -978,9 +1060,20 @@ def gather_repos(repos, mds, no_comments, week_days=()):
     merges = find_merges(data["commits"])
     counts["merges"] = len(merges)
     quote = find_quote(data["commits"], data["comments"])
+    # Tag items for the docket.
+    for item in data["commits"]:
+        item["kind"] = "commit"
+    for item in data["opened"] + data["closed"]:
+        item["kind"] = "issue"
+    for item in data["merged"]:
+        item["kind"] = "PR"
+        item["merged"] = True
+    docket_items = (data["commits"] + data["opened"] + data["closed"]
+                    + data["merged"])
     sections = [
         pullquote(quote),
         section("Scandals & Corrections", drama),
+        build_docket(docket_items, ticket_url),
         section("Merges", merges),
         section("★ Releases", data["releases"]),
         section("From the Commit Ledger", data["commits"]),
@@ -1014,7 +1107,7 @@ def gather_repos(repos, mds, no_comments, week_days=()):
     }
 
 
-def gather_author(user, mds, week_days=()):
+def gather_author(user, mds, week_days=(), ticket_url=""):
     """Edition data for one user's full activity on the month-days.
 
     Commits, issues and PRs opened, PRs merged, issues closed, and the
@@ -1055,9 +1148,20 @@ def gather_author(user, mds, week_days=()):
     merges = find_merges(commits)
     counts["merges"] = len(merges)
     quote = find_quote(commits, comments)
+    for item in commits:
+        item["kind"] = "commit"
+    for item in opened + closed:
+        item["kind"] = "issue"
+    for item in prs_opened:
+        item["kind"] = "PR"
+    for item in merged:
+        item["kind"] = "PR"
+        item["merged"] = True
+    docket_items = commits + opened + prs_opened + merged + closed
     sections = [
         pullquote(quote),
         section("Scandals & Corrections", drama),
+        build_docket(docket_items, ticket_url),
         section("Merges", merges),
         section("From the Commit Ledger", commits),
         section("Issues Opened", opened),
@@ -1200,6 +1304,10 @@ def main(argv=None):
     parser.add_argument("--week-url", default="",
                         help="Author mode only: link the daily edition to "
                              "its weekly edition at this URL")
+    parser.add_argument("--ticket-url", default="",
+                        help="Base URL for ticket keys (e.g. "
+                             "https://tracker.example.com/browse): "
+                             "keys like ABC-123 become links")
     args = parser.parse_args(argv)
 
     if args.author and args.repos:
@@ -1243,9 +1351,11 @@ def main(argv=None):
         md_long = target.strftime("%B %d")
 
     if args.author:
-        edition = gather_author(args.author, mds, week_days)
+        edition = gather_author(args.author, mds, week_days,
+                                ticket_url=args.ticket_url)
     else:
-        edition = gather_repos(args.repos, mds, args.no_comments, week_days)
+        edition = gather_repos(args.repos, mds, args.no_comments,
+                               week_days, ticket_url=args.ticket_url)
 
     if args.card:
         link = ("github.com/%s" % args.author if args.author

@@ -55,6 +55,7 @@ MAX_ISSUE_PAGES = 10
 MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3
 MAX_COMMENT_PAGES = 2
+MAX_COMMIT_PAGES = 3
 MAX_YEARS = 25
 MAX_TAG_DATE_LOOKUPS = 25
 
@@ -171,28 +172,38 @@ def year_of(iso_stamp):
     return int(iso_stamp[0:4])
 
 
+def _straddles_new_year(mds):
+    """True when the month-days span December and January."""
+    months = {md[:2] for md in mds if len(md) >= 2}
+    return "12" in months and "01" in months
+
+
 def year_ranges(year, mds):
     """(since, until) ISO ranges covering the month-days within one year.
 
     A week can straddle New Year; then it becomes two ranges.
     """
+    jan = sorted(md for md in mds if md.startswith("01-"))
+    dec = sorted(md for md in mds if md.startswith("12-"))
+    if jan and dec:
+        return [("%d-%sT00:00:00Z" % (year, jan[0]),
+                 "%d-%sT23:59:59.999Z" % (year, jan[-1])),
+                ("%d-%sT00:00:00Z" % (year, dec[0]),
+                 "%d-%sT23:59:59.999Z" % (year, dec[-1]))]
     lo, hi = min(mds), max(mds)
-    if lo <= hi:
-        return [("%d-%sT00:00:00Z" % (year, lo),
-                 "%d-%sT23:59:59Z" % (year, hi))]
-    return [("%d-01-01T00:00:00Z" % year,
-             "%d-%sT23:59:59Z" % (year, hi)),
-            ("%d-%sT00:00:00Z" % (year, lo),
-             "%d-12-31T23:59:59Z" % year)]
+    return [("%d-%sT00:00:00Z" % (year, lo),
+             "%d-%sT23:59:59.999Z" % (year, hi))]
 
 
 def search_ranges(year, mds):
     """GitHub search date ranges covering the month-days within one year."""
+    jan = sorted(md for md in mds if md.startswith("01-"))
+    dec = sorted(md for md in mds if md.startswith("12-"))
+    if jan and dec:
+        return ["%d-%s..%d-%s" % (year, jan[0], year, jan[-1]),
+                "%d-%s..%d-%s" % (year, dec[0], year, dec[-1])]
     lo, hi = min(mds), max(mds)
-    if lo <= hi:
-        return ["%d-%s..%d-%s" % (year, lo, year, hi)]
-    return ["%d-01-01..%d-%s" % (year, hi),
-            "%d-%s..%d-12-31" % (year, lo)]
+    return ["%d-%s..%d-%s" % (year, lo, year, hi)]
 
 
 def esc(text):
@@ -211,8 +222,8 @@ def fetch_commits(repo, mds, years):
     for year in years:
         for since, until in year_ranges(year, mds):
             params = {"since": since, "until": until, "per_page": 100}
-            for commit in api_paged("/repos/%s/commits" % repo, params, 1,
-                                    ignore_404=True):
+            for commit in api_paged("/repos/%s/commits" % repo, params,
+                                    MAX_COMMIT_PAGES, ignore_404=True):
                 info = commit.get("commit", {})
                 author = (info.get("author") or {}).get("name") or "unknown"
                 day = month_day((info.get("committer") or {}).get("date"))
@@ -225,21 +236,31 @@ def fetch_commits(repo, mds, years):
                     "byline": author,
                     "body": commit.get("sha", "")[:7],
                     "url": commit.get("html_url", ""),
+                    "login": (commit.get("author") or {}).get("login") or "",
                 })
     return found
 
 
 def fetch_issues(repo, mds):
-    """Non-PR issues opened or closed on the month-days, client-filtered."""
+    """Non-PR issues opened or closed on the month-days, client-filtered.
+
+    Fetches from both ends (oldest and newest) so large repositories do
+    not lose recent issues to the page cap.
+    """
     mds = set(mds)
-    params = {"state": "all", "sort": "created", "direction": "asc",
-              "per_page": 100}
+    seen = set()
     opened, closed = [], []
-    for issue in api_paged("/repos/%s/issues" % repo, params,
-                             MAX_ISSUE_PAGES, ignore_404=True):
-        if "pull_request" in issue:
-            continue
-        number = issue.get("number")
+    for direction in ("asc", "desc"):
+        params = {"state": "all", "sort": "created",
+                  "direction": direction, "per_page": 100}
+        for issue in api_paged("/repos/%s/issues" % repo, params,
+                               MAX_ISSUE_PAGES, ignore_404=True):
+            if "pull_request" in issue:
+                continue
+            number = issue.get("number")
+            if number in seen:
+                continue
+            seen.add(number)
         url = issue.get("html_url", "")
         byline = (issue.get("user") or {}).get("login") or "unknown"
         created_day = month_day(issue.get("created_at"))
@@ -378,6 +399,21 @@ def fetch_comments(repo, mds):
     return picked
 
 
+_repo_private_cache = {}
+
+
+def repo_is_private(owner, repo):
+    """True when the repository is private, cached for the run."""
+    key = "%s/%s" % (owner, repo)
+    if key not in _repo_private_cache:
+        try:
+            info = api_get("/repos/%s" % key)
+            _repo_private_cache[key] = bool(info.get("private"))
+        except urllib.error.HTTPError:
+            _repo_private_cache[key] = False
+    return _repo_private_cache[key]
+
+
 def author_commits(user, mds, years):
     """Commits authored by user on the month-days, via commit search."""
     mds = set(mds)
@@ -393,6 +429,7 @@ def author_commits(user, mds, years):
                 if day not in mds:
                     continue
                 repo = ((hit.get("repository") or {}).get("full_name")) or "?"
+                private = bool((hit.get("repository") or {}).get("private"))
                 found.append({
                     "year": year_of(stamp),
                     "day": day,
@@ -401,6 +438,7 @@ def author_commits(user, mds, years):
                     "body": hit.get("sha", "")[:7],
                     "url": hit.get("html_url", ""),
                     "login": user,
+                    "private": private,
                 })
     return found
 
@@ -766,7 +804,9 @@ def build_lede(repo, md_long, counts, years, week=False):
         bits.append("%d pull request%s opened" % (
             counts["prs_opened"], "" if counts["prs_opened"] == 1 else "s"))
     if counts.get("closed"):
-        bits.append("%d closed" % counts["closed"])
+        bits.append("%d issue%s closed" % (counts["closed"],
+                                          "" if counts["closed"] == 1
+                                          else "s"))
     if counts.get("merged"):
         bits.append("%d pull request%s merged" % (
             counts["merged"], "" if counts["merged"] == 1 else "s"))
@@ -877,14 +917,17 @@ def tag_repo(items, repo):
 
 
 def day_by_day(pairs, week_days, span):
-    """Per-weekday activity summaries across the years."""
+    """Per-weekday activity summaries across the years.
+
+    Each pair is (singular, plural, items).
+    """
     items = []
     for md, label in week_days:
         bits = []
-        for name, lst in pairs:
+        for singular, plural, lst in pairs:
             n = sum(1 for i in lst if i.get("day") == md)
             if n:
-                bits.append("%d %s" % (n, name if n == 1 else name + "s"))
+                bits.append("%d %s" % (n, singular if n == 1 else plural))
         if not bits:
             continue
         items.append({
@@ -932,10 +975,13 @@ def gather_repos(repos, mds, no_comments, week_days=()):
     drama = (find_reverts(data["commits"])
              + hottest_threads(data["opened"], data["closed"]))
     counts["drama"] = len(drama)
+    merges = find_merges(data["commits"])
+    counts["merges"] = len(merges)
     quote = find_quote(data["commits"], data["comments"])
     sections = [
         pullquote(quote),
         section("Scandals & Corrections", drama),
+        section("Merges", merges),
         section("★ Releases", data["releases"]),
         section("From the Commit Ledger", data["commits"]),
         section("Tags Cut", data["tags"]),
@@ -945,11 +991,14 @@ def gather_repos(repos, mds, no_comments, week_days=()):
         section("Voices From the Threads", data["comments"]),
     ]
     if week_days:
-        pairs = [("commit", data["commits"]), ("issue opened", data["opened"]),
-                 ("issue closed", data["closed"]),
-                 ("pull request merged", data["merged"]),
-                 ("release", data["releases"]), ("tag", data["tags"]),
-                 ("comment", data["comments"])]
+        pairs = [("commit", "commits", data["commits"]),
+                 ("issue opened", "issues opened", data["opened"]),
+                 ("issue closed", "issues closed", data["closed"]),
+                 ("pull request merged", "pull requests merged",
+                  data["merged"]),
+                 ("release", "releases", data["releases"]),
+                 ("tag", "tags", data["tags"]),
+                 ("comment", "comments", data["comments"])]
         sections.insert(1, day_by_day(pairs, week_days, span))
     body = "\n".join(sections)
     single = len(repos) == 1
@@ -981,6 +1030,22 @@ def gather_author(user, mds, week_days=()):
     commits = author_commits(user, mds, years)
     opened, prs_opened, merged, closed = author_issues(user, mds, years)
     comments = author_comments(user, mds, years)
+    # The edition draws from the private record when any included activity
+    # comes from a private repository. Commit search hits carry the flag;
+    # issue and comment repos are checked directly, cached per repo.
+    has_private = any(i.get("private") for i in commits)
+    if not has_private:
+        seen_repos = set()
+        for item in opened + prs_opened + merged + closed + comments:
+            byline = item.get("byline", "")
+            if " · " in byline:
+                repo = byline.split(" · ", 1)[1].strip()
+                if "/" in repo and repo not in seen_repos:
+                    seen_repos.add(repo)
+                    owner, name = repo.split("/", 1)
+                    if repo_is_private(owner, name):
+                        has_private = True
+                        break
     counts = {"commits": len(commits), "opened": len(opened),
               "prs_opened": len(prs_opened), "merged": len(merged),
               "closed": len(closed), "comments": len(comments)}
@@ -1002,11 +1067,13 @@ def gather_author(user, mds, week_days=()):
         section("Voices From the Threads", comments),
     ]
     if week_days:
-        pairs = [("commit", commits), ("issue opened", opened),
-                 ("pull request opened", prs_opened),
-                 ("pull request merged", merged),
-                 ("issue closed", closed), ("merge", merges),
-                 ("comment", comments)]
+        pairs = [("commit", "commits", commits),
+                 ("issue opened", "issues opened", opened),
+                 ("pull request opened", "pull requests opened", prs_opened),
+                 ("pull request merged", "pull requests merged", merged),
+                 ("issue closed", "issues closed", closed),
+                 ("merge", "merges", merges),
+                 ("comment", "comments", comments)]
         sections.insert(1, day_by_day(pairs, week_days, span))
     body = "\n".join(sections)
     return {
@@ -1015,7 +1082,7 @@ def gather_author(user, mds, week_days=()):
         "years": years,
         "counts": counts,
         "body": body,
-        "record": ("Compiled from the private record" if resolve_token()
+        "record": ("Compiled from the private record" if has_private
                    else "Compiled from the public record"),
         "subject": {"author": user},
     }
@@ -1161,9 +1228,13 @@ def main(argv=None):
         if first.month == last.month:
             md_long = "%s %d-%d, %d" % (first.strftime("%B"), first.day,
                                         last.day, first.year)
-        else:
+        elif first.year == last.year:
             md_long = "%s %d to %s %d, %d" % (
                 first.strftime("%B"), first.day,
+                last.strftime("%B"), last.day, last.year)
+        else:
+            md_long = "%s %d, %d to %s %d, %d" % (
+                first.strftime("%B"), first.day, first.year,
                 last.strftime("%B"), last.day, last.year)
     else:
         md = target.strftime("%m-%d")

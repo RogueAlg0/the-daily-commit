@@ -917,6 +917,165 @@ def find_reverts(commits):
     return drama
 
 
+# Words people write when they're confessing to a mistake.
+CONFESSION_TOKENS = (
+    "oops", "woops", "oopsie", "my bad", "my fault", "sorry",
+    "mistake", "broke", "broken", "fix my", "revert my",
+)
+# Words that signal a temporary hack.
+HACK_TOKENS = (
+    "hack", "temp", "temporary", "wip", "do not merge", "dont merge",
+    "please work", "yolo", "magic",
+)
+# "Final" is never final.
+FINAL_TOKENS = ("final", "really final", "actually final", "last fix")
+# Author doesn't know why it works.
+IDK_TOKENS = (
+    "don't know", "dont know", "not sure", "no idea", "magic",
+    "no clue", "works somehow", "don't ask",
+)
+# Desperation.
+DESPERATE_TOKENS = (
+    "please", "help", "wtf", "urgent", "asap", "emergency",
+    "critical", "broken prod", "prod is down",
+)
+# Exhaustion.
+TIRED_TOKENS = (
+    "tired", "late night", "3am", "midnight", "exhausted",
+    "sleep", "weekend",
+)
+# Blaming the tool.
+BLAME_TOOL_TOKENS = (
+    "stupid", "damn linter", "webpack", "npm", "gradle",
+    "xcode", "android studio",
+)
+# Overconfidence.
+OVERCONFIDENT_TOKENS = (
+    "should work", "probably", "hopefully", "fingers crossed",
+    "trust me",
+)
+# Underconfidence.
+UNDERCONFIDENT_TOKENS = (
+    "maybe", "might fix", "try", "attempt", "see if",
+)
+# Typo fixes (the humblest commits).
+TYPO_TOKENS = ("typo", "spelling", "whitespace", "semicolon", "lint")
+# Merge pain.
+MERGE_HELL_TOKENS = (
+    "merge conflict", "conflict", "resolve", "damn merge",
+)
+# Works on my machine.
+LOCAL_TOKENS = (
+    "works locally", "my machine", "can't reproduce", "cant reproduce",
+)
+# Food-powered.
+FOOD_TOKENS = ("coffee", "pizza", "beer", "caffeine")
+# Deletions (satisfying).
+DELETE_TOKENS = (
+    "remove dead", "delete", "cleanup", "dead code", "kill",
+)
+# First commits.
+FIRST_TOKENS = ("initial commit", "first commit", "hello world")
+# Performance.
+PERF_TOKENS = ("perf", "optimize", "faster", "slow", "speed up")
+# Security.
+SECURITY_TOKENS = ("security", "vuln", "cve", "auth fix")
+
+
+# Registry of quip types: (name, tokens).
+QUIP_REGISTRY = [
+    ("confession", CONFESSION_TOKENS),
+    ("hack", HACK_TOKENS),
+    ("final", FINAL_TOKENS),
+    ("idk", IDK_TOKENS),
+    ("desperate", DESPERATE_TOKENS),
+    ("tired", TIRED_TOKENS),
+    ("blame_tool", BLAME_TOOL_TOKENS),
+    ("overconfident", OVERCONFIDENT_TOKENS),
+    ("underconfident", UNDERCONFIDENT_TOKENS),
+    ("typo", TYPO_TOKENS),
+    ("merge_hell", MERGE_HELL_TOKENS),
+    ("local", LOCAL_TOKENS),
+    ("food", FOOD_TOKENS),
+    ("delete", DELETE_TOKENS),
+    ("first", FIRST_TOKENS),
+    ("perf", PERF_TOKENS),
+    ("security", SECURITY_TOKENS),
+]
+
+
+def find_quips(commits):
+    """All quip types in one pass. Returns {quip_name: [items]}.
+
+    Content-based only: matches words people actually wrote.
+    No timestamps, no counts, no math.
+    """
+    results = {name: [] for name, _ in QUIP_REGISTRY}
+    results["shouty"] = []
+    results["question"] = []
+    for item in commits:
+        headline = item["headline"]
+        low = headline.lower()
+        for name, tokens in QUIP_REGISTRY:
+            if any(t in low for t in tokens):
+                results[name].append(item)
+        # ALL CAPS and trailing "?" need their own checks.
+        words = [w for w in headline.split() if w.isalpha()]
+        if len(words) >= 3 and all(w.isupper() for w in words):
+            results["shouty"].append(item)
+        if headline.strip().endswith("?"):
+            results["question"].append(item)
+    return {k: v for k, v in results.items() if v}
+
+
+def curate_drama(candidates_by_type, limit=5, seed=""):
+    """A newspaper editor, not a firehose.
+
+    Takes dict of {type_name: [items]}, picks up to `limit` total,
+    spreading picks across types for variety. Seeded for consistency:
+    the same edition shows the same selection. Random, but respectful.
+    """
+    import random
+    rng = random.Random(seed)
+    # Shuffle types, then round-robin pick one from each.
+    types = list(candidates_by_type.keys())
+    rng.shuffle(types)
+    picked = []
+    pools = {t: list(items) for t, items in candidates_by_type.items()}
+    for t in pools:
+        rng.shuffle(pools[t])
+    while len(picked) < limit:
+        progressed = False
+        for t in types:
+            if pools[t] and len(picked) < limit:
+                picked.append(pools[t].pop())
+                progressed = True
+        if not progressed:
+            break
+    return picked
+
+
+def funny_branch_name(branch):
+    """Extract the human part of a branch name for quoting.
+
+    "fix/PROJ-123-please-work" -> "please-work". Skips boring names.
+    """
+    if not branch:
+        return ""
+    # Take the last segment, strip ticket keys.
+    part = branch.split("/")[-1]
+    part = TICKET_RE.sub("", part).strip("-_")
+    # Skip if it's just a ticket key or too short to be funny.
+    if len(part) < 4:
+        return ""
+    # Skip purely descriptive names.
+    boring = ("main", "master", "develop", "feature", "fix", "hotfix",
+              "release", "test")
+    if part.lower() in boring:
+        return ""
+    return part
+
+
 LAUGH_TOKENS = ("haha", "lol", "lmao", "rofl", "hehe", "ha ha")
 OOPS_TOKENS = ("oops", "woops", "oopsie", "uh oh", "my bad", "my fault")
 SPICY_TOKENS = ("wtf", "damn", "dammit", "urgent", "asap", "sorry",
@@ -1318,7 +1477,12 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     years = list(range(min(created), current_year + 1))[-MAX_YEARS:]
     span = "%d-%d" % (years[0], years[-1]) if len(years) > 1 else str(years[0])
     counts = {key: len(items) for key, items in data.items()}
-    drama = (find_reverts(data["commits"])
+    # Newspaper-style curation: many quip types, but only a few make
+    # the edition. Seeded by date for consistency.
+    seed = "%s-%s" % (mds[0] if mds else "", span)
+    candidates = find_quips(data["commits"])
+    candidates["revert"] = find_reverts(data["commits"])
+    drama = (curate_drama(candidates, limit=5, seed=seed)
              + hottest_threads(data["opened"], data["closed"]))
     counts["drama"] = len(drama)
     merges = find_merges(data["commits"])
@@ -1406,7 +1570,10 @@ def gather_author(user, mds, week_days=(), ticket_url=""):
     counts = {"commits": len(commits), "opened": len(opened),
               "prs_opened": len(prs_opened), "merged": len(merged),
               "closed": len(closed), "comments": len(comments)}
-    drama = (find_reverts(commits)
+    seed = "%s-%s" % (mds[0] if mds else "", span)
+    candidates = find_quips(commits)
+    candidates["revert"] = find_reverts(commits)
+    drama = (curate_drama(candidates, limit=5, seed=seed)
              + hottest_threads(opened + prs_opened, closed))
     counts["drama"] = len(drama)
     merges = find_merges(commits)

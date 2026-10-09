@@ -8,6 +8,13 @@ self-contained HTML page styled like a vintage newspaper.
 
 Usage:
     python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
+    [--share]
+
+With --share, the finished page is uploaded to htmldoc.space and the
+shareable link (30-day expiry) is printed. The link is unlisted but anyone
+with the URL can open it, so only share editions you are comfortable
+making visible. First share needs a one-time login:
+    npx -y htmldoc-cli login
 
 The month-day defaults to today (UTC). The script reads its credential from
 the THE_DAILY_COMMIT_TOKEN environment variable, falling back to GITHUB_TOKEN.
@@ -22,7 +29,10 @@ import datetime as dt
 import html
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 
@@ -248,6 +258,31 @@ def build_lede(repo, md_long, counts, years):
             % (md_long, span, repo, "; ".join(bits)))
 
 
+def share_html(path):
+    """Upload path to htmldoc.space; return the share URL, or "" on failure."""
+    if not shutil.which("npx"):
+        print("error: --share needs Node.js (npx not found on PATH).",
+              file=sys.stderr)
+        return ""
+    try:
+        proc = subprocess.run(
+            ["npx", "-y", "htmldoc-cli", path],
+            capture_output=True, text=True, timeout=180)
+    except subprocess.TimeoutExpired:
+        print("error: htmldoc-cli timed out.", file=sys.stderr)
+        return ""
+    tokens = proc.stdout.strip().split()
+    url = tokens[-1] if tokens else ""
+    if proc.returncode != 0 or not url.startswith("http"):
+        print("error: share failed. First share needs a one-time login:",
+              file=sys.stderr)
+        print("  npx -y htmldoc-cli login", file=sys.stderr)
+        if proc.stderr.strip():
+            print(proc.stderr.strip()[-2000:], file=sys.stderr)
+        return ""
+    return url
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate an 'on this day' newspaper page for a repo.")
@@ -258,6 +293,9 @@ def main(argv=None):
                         help="Output HTML path (default: print a summary)")
     parser.add_argument("--no-comments", action="store_true",
                         help="Skip the comments section")
+    parser.add_argument("--share", action="store_true",
+                        help="Upload the edition to htmldoc.space and print "
+                             "the shareable link (30-day expiry)")
     args = parser.parse_args(argv)
 
     if args.date:
@@ -302,11 +340,18 @@ def main(argv=None):
                                                years)))
             .replace("{{BODY}}", body))
 
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as f:
+    out_path = args.out
+    if args.share and not out_path:
+        fd, out_path = tempfile.mkstemp(suffix=".html",
+                                        prefix="daily-commit-")
+        os.close(fd)
+    if out_path:
+        with open(out_path, "w", encoding="utf-8") as f:
             f.write(page)
+    share_url = share_html(out_path) if args.share else ""
     print(json.dumps({"repo": args.repo, "date": md, "counts": counts,
-                      "out": args.out or "(stdout summary only)"}))
+                      "out": out_path or "(stdout summary only)",
+                      "share": share_url or None}))
 
 
 if __name__ == "__main__":

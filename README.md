@@ -41,6 +41,7 @@ the-daily-commit owner/repo --out today.html
 | `--date MM-DD`  | Cover a different month-day (default: today, UTC)   |
 | `--out FILE`    | Write the HTML page to FILE                         |
 | `--no-comments` | Skip the comments section                           |
+| `--share`       | Upload the edition to htmldoc.space and print the shareable link (30-day expiry) |
 
 ## Private repositories
 
@@ -85,6 +86,25 @@ upload the file to one of these free services:
   hours. No account is needed.
 
 The file never leaves your machine until you upload it yourself.
+
+### One-command sharing
+
+Pass `--share` to generate and upload in one step:
+
+```sh
+the-daily-commit owner/repo --share
+```
+
+This uses the `htmldoc-cli` tool (via `npx`, so Node.js is required).
+The first share needs a one-time login:
+
+```sh
+npx -y htmldoc-cli login
+```
+
+Sign in with GitHub in the browser page it opens. After that, `--share`
+prints the 30-day link. The link is unlisted, but anyone with the URL can
+open it, so only share editions you are comfortable making visible.
 
 ## Project layout
 

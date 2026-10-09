@@ -10,7 +10,7 @@ Usage:
     python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
 
 The month-day defaults to today (UTC). The script reads its credential from
-the ON_THIS_DAY_TOKEN environment variable, falling back to GITHUB_TOKEN.
+the THE_DAILY_COMMIT_TOKEN environment variable, falling back to GITHUB_TOKEN.
 Set one of them to raise the API rate limit and to cover private
 repositories; without a token, the script uses the lower unauthenticated
 rate limit and can only read public repositories. All API calls are
@@ -43,10 +43,10 @@ def api_get(path, params=None):
         url,
         headers={
             "Accept": "application/vnd.github+json",
-            "User-Agent": "on-this-day-generator",
+            "User-Agent": "the-daily-commit-generator",
         },
     )
-    token = os.environ.get("ON_THIS_DAY_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = os.environ.get("THE_DAILY_COMMIT_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
         req.add_header("Authorization", "Bearer " + token)
     with urllib.request.urlopen(req, timeout=30) as resp:

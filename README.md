@@ -1,4 +1,4 @@
-# On This Day
+# The Daily Commit
 
 Generate a vintage-newspaper "on this day in history" page for any GitHub
 repository, on demand.
@@ -25,13 +25,13 @@ Open `today.html` in a browser to read the edition. For convenience, add an
 alias in your shell profile:
 
 ```sh
-alias on-this-day='python3 /path/to/on-this-day/generate.py'
+alias the-daily-commit='python3 /path/to/the-daily-commit/generate.py'
 ```
 
 Then each edition is one command:
 
 ```sh
-on-this-day owner/repo --out today.html
+the-daily-commit owner/repo --out today.html
 ```
 
 ## Options
@@ -44,13 +44,13 @@ on-this-day owner/repo --out today.html
 
 ## Private repositories
 
-Set the `ON_THIS_DAY_TOKEN` environment variable (or `GITHUB_TOKEN`) to a
+Set the `THE_DAILY_COMMIT_TOKEN` environment variable (or `GITHUB_TOKEN`) to a
 personal access token to raise the API rate limit and to cover private
 repositories you can access. Without a token, the script uses the lower
 unauthenticated rate limit and can only read public repositories.
 
 ```sh
-ON_THIS_DAY_TOKEN=ghp_xxx python3 generate.py myorg/private-repo \
+THE_DAILY_COMMIT_TOKEN=ghp_xxx python3 generate.py myorg/private-repo \
   --out today.html
 ```
 

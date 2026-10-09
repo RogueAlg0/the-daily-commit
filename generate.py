@@ -2146,7 +2146,7 @@ def main(argv=None):
             .replace("{{KICKER}}", "A weekly chronicle of repository history"
                      if args.week else "A daily chronicle of repository history")
             .replace("{{DATELINE}}", esc(md_long))
-            .replace("{{CLOCK_FALLBACK}}", datetime.datetime.now().strftime("%I:%M %p"))
+            .replace("{{CLOCK_FALLBACK}}", dt.datetime.now().strftime("%I:%M %p"))
             .replace("{{RECORD}}", edition["record"])
             .replace("{{LEDE}}", esc(build_lede(edition["label"], md_long,
                                                edition["counts"],

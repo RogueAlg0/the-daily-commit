@@ -1358,6 +1358,87 @@ def find_new_voices(commits):
     return voices
 
 
+class EditionMemory:
+    """Lean cross-edition memory. Never bloats.
+
+    Stores only hashes and counters, not full text.
+    Auto-prunes to last 10 editions. Max ~2KB on disk.
+    """
+    MAX_EDITIONS = 10
+    FILENAME = "editions.json"
+
+    def __init__(self, path=None):
+        import os
+        self.path = path or os.path.join(
+            os.path.dirname(__file__), self.FILENAME)
+        self.data = {"editions": []}
+        self._load()
+
+    def _load(self):
+        import json, os
+        if os.path.exists(self.path):
+            try:
+                with open(self.path) as f:
+                    self.data = json.load(f)
+            except (json.JSONDecodeError, OSError):
+                self.data = {"editions": []}
+
+    def _save(self):
+        import json
+        # Prune to last N before saving
+        self.data["editions"] = self.data["editions"][-self.MAX_EDITIONS:]
+        with open(self.path, "w") as f:
+            json.dump(self.data, f, separators=(",", ":"))
+
+    def _hash(self, text):
+        import hashlib
+        return hashlib.md5(text.encode()).hexdigest()[:8]
+
+    def record(self, quips=(), ads=(), notes=(), contributors=(),
+               lead_headline=""):
+        """Record one edition. All inputs are strings; we store hashes."""
+        edition = {
+            "q": [self._hash(q) for q in quips[:10]],
+            "a": [self._hash(a) for a in ads[:10]],
+            "n": [self._hash(n) for n in notes[:10]],
+            "c": list(set(contributors))[:20],  # logins, not hashes (short)
+            "l": self._hash(lead_headline) if lead_headline else "",
+        }
+        self.data["editions"].append(edition)
+        self._save()
+
+    def seen_quip(self, quip_text, within=6):
+        """Has this quip appeared in the last N editions?"""
+        h = self._hash(quip_text)
+        for e in self.data["editions"][-within:]:
+            if h in e.get("q", []):
+                return True
+        return False
+
+    def seen_ad(self, ad_text, within=6):
+        h = self._hash(ad_text)
+        for e in self.data["editions"][-within:]:
+            if h in e.get("a", []):
+                return True
+        return False
+
+    def contributor_streak(self, login):
+        """How many recent editions featured this contributor?"""
+        count = 0
+        for e in reversed(self.data["editions"]):
+            if login in e.get("c", []):
+                count += 1
+            else:
+                break
+        return count
+
+    def size_bytes(self):
+        import os
+        if os.path.exists(self.path):
+            return os.path.getsize(self.path)
+        return 0
+
+
 def repo_weather(commits, merges, issues):
     """Commit activity as a weather report.
 

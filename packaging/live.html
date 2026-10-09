@@ -38,10 +38,7 @@
 
 <div class="repo-picker">
   <input id="repo-input" placeholder="owner/repo" aria-label="Repository">
-  <button id="repo-go">Read the paper</button><br>
-  <input id="token-input" type="password" placeholder="GitHub token (optional, for higher limits)"
-         aria-label="GitHub token" style="margin-top: 0.5em; width: 280px;">
-</div>
+  <button id="repo-go">Read the paper</button></div>
 
 <div id="content"><p class="loading">Fetching today's edition…</p></div>
 
@@ -67,28 +64,6 @@
     if (r) location.search = "?repo=" + encodeURIComponent(r);
   };
 
-  // Optional personal access token, stored only in this browser.
-  // Raises the GitHub API quota from 60 to 5,000 calls per hour.
-  var tokenInput = document.getElementById("token-input");
-  try {
-    tokenInput.value = localStorage.getItem("tdc-token") || "";
-  } catch (e) {}
-  tokenInput.onchange = function () {
-    try {
-      if (tokenInput.value.trim()) {
-        localStorage.setItem("tdc-token", tokenInput.value.trim());
-      } else {
-        localStorage.removeItem("tdc-token");
-      }
-    } catch (e) {}
-  };
-  function authToken() {
-    try {
-      return localStorage.getItem("tdc-token") || "";
-    } catch (e) {
-      return "";
-    }
-  }
 
   // Viewer's local day as a UTC range for the API.
   var now = new Date();
@@ -114,10 +89,9 @@
   }
 
   function get(path) {
-    var headers = { "Accept": "application/vnd.github+json" };
-    var token = authToken();
-    if (token) headers["Authorization"] = "Bearer " + token;
-    return fetch(API + path, { headers: headers }).then(function (r) {
+    return fetch(API + path, {
+      headers: { "Accept": "application/vnd.github+json" }
+    }).then(function (r) {
       var remaining = r.headers.get("x-ratelimit-remaining");
       var reset = r.headers.get("x-ratelimit-reset");
       if (remaining !== null) {

@@ -48,6 +48,42 @@ Then each edition is one command:
 the-daily-commit owner/repo --out today.html
 ```
 
+## Modes
+
+### Repository mode (default)
+
+Pass one or more repositories. Everything that happened on the month-day
+across every year of each repository's history lands in one paper; with
+several repositories, each article's byline names its home repository.
+
+```sh
+the-daily-commit torvalds/linux --out today.html
+the-daily-commit myorg/web myorg/api --out today.html
+```
+
+### User mode
+
+Pass `--author` to cover one user's whole footprint on the month-day:
+their commits, issues and pull requests opened, pull requests merged,
+issues closed, and their own comments, across every repository they
+touched. Handy as a personal "on this day" page or a living portfolio.
+
+```sh
+the-daily-commit --author RogueAlg0 --out today.html
+```
+
+User mode uses the GitHub search APIs, which have stricter rate limits
+than the REST API, so it pauses a few seconds between searches. Setting
+a token (see below) raises the limits. Releases and tags have no global
+search, so they appear in repository mode only.
+
+A "Merges" section flags the user's merge commits: cross-author merges
+(the user merging another author's branch) are called out, as are
+direct merges into main or master. Pull request headlines show their
+`head → base` branches. Branch creation and deletion dates are not
+available: GitHub keeps no historical branch record beyond 90 days of
+events.
+
 ## Options
 
 | Flag            | Effect                                              |
@@ -90,6 +126,17 @@ client side:
   release are skipped. Best-effort for repositories with many tags.
 - Comments: scans recent issue comments and keeps up to five written on the
   month-day.
+
+User mode (`--author`) instead uses the commit and issue search APIs:
+`author:` plus `committer-date:` for commits, `author:` plus `created:`
+for opened issues and PRs, `author:` plus `updated:` filtered by close
+date for closed issues, one pulls-API read per candidate for merged PRs
+(the issue search carries no merge date), and `commenter:` plus
+`updated:` for the user's own comments. Merge commits are detected from
+their messages ("Merge pull request #N from ...", "Merge branch 'x' into
+main") and reported in a dedicated section, with cross-author merges
+flagged. Search calls are paced a few seconds apart for the search API's
+stricter rate limits.
 
 `template.html` holds the newspaper layout and CSS. `generate.py` fills in
 the title, dateline, lede paragraph, and article sections. All repository

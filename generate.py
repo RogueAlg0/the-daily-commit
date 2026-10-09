@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Generate a vintage-newspaper "on this day" page for a GitHub repository.
+"""Generate a vintage-newspaper "on this day" page for GitHub activity.
 
-Collects everything that happened on one month-day across every year of a
-repository's history: commits, issues opened and closed, pull requests
-merged, releases published, tags cut, and notable comments. Renders the
-result as a self-contained HTML page styled like a vintage newspaper,
-with a gossip column up front: reverts (reverts of reverts get flagged)
-and the day's most-commented threads.
+Two modes. Repository mode collects everything that happened on one
+month-day across every year of one or more repositories' history:
+commits, issues opened and closed, pull requests merged, releases
+published, tags cut, and notable comments. User mode (--author)
+collects one user's whole footprint on the month-day instead: their
+commits, issues and PRs opened, PRs merged, issues closed, and their
+own comments, across every repository they touched.
+
+Renders the result as a self-contained HTML page styled like a vintage
+newspaper, with a gossip column up front: reverts (reverts of reverts
+get flagged) and the day's most-commented threads.
 
 Usage:
-    python3 generate.py owner/repo [--date MM-DD] [--out FILE] [--no-comments]
-    [--share]
+    python3 generate.py owner/repo [owner/repo ...] [--date MM-DD]
+        [--out FILE] [--no-comments] [--share]
+    python3 generate.py --author USER [--date MM-DD] [--out FILE] [--share]
 
 With --share, the finished page is published to here.now as an anonymous
 site and the shareable link (24-hour expiry) is printed. Anonymous
@@ -33,10 +39,12 @@ import hashlib
 import html
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 
@@ -104,6 +112,25 @@ def api_get(path, params=None):
         req.add_header("Authorization", "Bearer " + token)
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def search_get(path, params):
+    """GET against the search API, paced for its stricter rate limits."""
+    time.sleep(2 if resolve_token() else 7)
+    try:
+        return api_get(path, params)
+    except urllib.error.HTTPError as exc:
+        if exc.code in (403, 429):
+            print("error: GitHub search rate limit hit. Wait a minute, or "
+                  "set THE_DAILY_COMMIT_TOKEN (or log in with gh) for "
+                  "higher limits.", file=sys.stderr)
+        raise
+
+
+def search_paged(path, q):
+    """First page of a search (up to 100 hits): one author's day fits."""
+    data = search_get(path, {"q": q, "per_page": 100})
+    return data.get("items", [])
 
 
 def api_paged(path, params, max_pages, ignore_404=False):
@@ -219,8 +246,10 @@ def fetch_merged_prs(repo, md):
             continue
         merged.append({
             "year": year_of(pr["merged_at"]),
-            "headline": "#%s %s" % (pr.get("number"),
-                                    first_line(pr.get("title"))),
+            "headline": "#%s %s (%s \u2192 %s)" % (
+                pr.get("number"), first_line(pr.get("title")),
+                ((pr.get("head") or {}).get("ref")) or "?",
+                ((pr.get("base") or {}).get("ref")) or "?"),
             "byline": (pr.get("user") or {}).get("login") or "unknown",
             "body": first_line(pr.get("body")),
             "url": pr.get("html_url", ""),
@@ -303,6 +332,157 @@ def fetch_comments(repo, md):
         if len(picked) >= 5:
             break
     return picked
+
+
+def author_commits(user, md, years):
+    """Commits authored by user on month-day, via the commit search API."""
+    found = []
+    for year in years:
+        query = "author:%s committer-date:%d-%s" % (user, year, md)
+        for hit in search_paged("/search/commits", query):
+            info = hit.get("commit", {})
+            stamp = ((info.get("committer") or {}).get("date")
+                     or (info.get("author") or {}).get("date"))
+            if month_day(stamp) != md:
+                continue
+            repo = ((hit.get("repository") or {}).get("full_name")) or "?"
+            found.append({
+                "year": year_of(stamp),
+                "headline": first_line(info.get("message")),
+                "byline": "%s · %s" % (user, repo),
+                "body": hit.get("sha", "")[:7],
+                "url": hit.get("html_url", ""),
+                "login": user,
+            })
+    return found
+
+
+def author_issue_item(hit, stamp, user, kind, head="?", base="?"):
+    """One issue/PR search hit as a newspaper item."""
+    repo_url = hit.get("repository_url", "").rstrip("/")
+    repo = "/".join(repo_url.split("/")[-2:]) or "?"
+    if kind == "PR":
+        headline = "PR #%s %s (%s \u2192 %s)" % (
+            hit.get("number"), first_line(hit.get("title")), head, base)
+    else:
+        headline = "%s #%s %s" % (kind, hit.get("number"),
+                                  first_line(hit.get("title")))
+    return {
+        "year": year_of(stamp),
+        "headline": headline,
+        "byline": "%s · %s" % (user, repo),
+        "body": first_line(hit.get("body")),
+        "url": hit.get("html_url", ""),
+        "comments": hit.get("comments", 0),
+    }
+
+
+def pr_branches(owner, repo, number):
+    """(head, base) branch names for a PR, ("?", "?") on failure."""
+    try:
+        pr = api_get("/repos/%s/%s/pulls/%s" % (owner, repo, number))
+    except urllib.error.HTTPError:
+        return "?", "?"
+    head = ((pr.get("head") or {}).get("ref")) or "?"
+    base = ((pr.get("base") or {}).get("ref")) or "?"
+    return head, base
+
+
+def repo_parts(hit):
+    """(owner, repo) from an issue search hit's repository_url."""
+    parts = hit.get("repository_url", "").rstrip("/").split("/")[-2:]
+    return parts if len(parts) == 2 else (None, None)
+
+
+def author_issues(user, md, years):
+    """Issues/PRs opened, merged, and issues closed by user on month-day.
+
+    Merged pull requests need one pulls-API read each: issue search
+    results carry no merge date. Releases and tags have no global
+    search, so they stay repository-mode only.
+    """
+    opened, prs_opened, merged, closed = [], [], [], []
+    for year in years:
+        day = "%d-%s" % (year, md)
+        for hit in search_paged(
+                "/search/issues", "author:%s created:%s" % (user, day)):
+            if month_day(hit.get("created_at")) != md:
+                continue
+            if "pull_request" in hit:
+                owner, repo = repo_parts(hit)
+                if owner:
+                    head, base = pr_branches(owner, repo, hit.get("number"))
+                else:
+                    head, base = "?", "?"
+                prs_opened.append(author_issue_item(hit, hit.get("created_at"),
+                                                   user, "PR", head, base))
+            else:
+                opened.append(author_issue_item(hit, hit.get("created_at"),
+                                               user, "Issue"))
+        for hit in search_paged(
+                "/search/issues",
+                "author:%s updated:%s type:pr" % (user, day)):
+            if month_day(hit.get("closed_at")) != md:
+                continue
+            owner, repo = repo_parts(hit)
+            if not owner:
+                continue
+            try:
+                pr = api_get("/repos/%s/%s/pulls/%s"
+                             % (owner, repo, hit.get("number")))
+            except urllib.error.HTTPError:
+                continue
+            if month_day(pr.get("merged_at")) == md:
+                head = ((pr.get("head") or {}).get("ref")) or "?"
+                base = ((pr.get("base") or {}).get("ref")) or "?"
+                merged.append(author_issue_item(hit, pr.get("merged_at"),
+                                               user, "PR", head, base))
+        for hit in search_paged(
+                "/search/issues",
+                "author:%s updated:%s type:issue" % (user, day)):
+            if month_day(hit.get("closed_at")) == md:
+                closed.append(author_issue_item(hit, hit.get("closed_at"),
+                                                user, "Issue"))
+    return opened, prs_opened, merged, closed
+
+
+def author_comments(user, md, years):
+    """Comments the user posted on month-day, across all repositories."""
+    found = []
+    seen = set()
+    for year in years:
+        day = "%d-%s" % (year, md)
+        for hit in search_paged(
+                "/search/issues", "commenter:%s updated:%s" % (user, day)):
+            owner, repo = repo_parts(hit)
+            if not owner:
+                continue
+            key = (owner, repo, hit.get("number"))
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                comments = api_paged(
+                    "/repos/%s/%s/issues/%s/comments"
+                    % (owner, repo, hit.get("number")),
+                    {"per_page": 100}, MAX_PAGES)
+            except urllib.error.HTTPError:
+                continue
+            kind = "PR" if "pull_request" in hit else "Issue"
+            for comment in comments:
+                if ((comment.get("user") or {}).get("login") != user
+                        or month_day(comment.get("created_at")) != md):
+                    continue
+                found.append({
+                    "year": year,
+                    "headline": "On %s #%s %s" % (
+                        kind, hit.get("number"),
+                        first_line(hit.get("title"))),
+                    "byline": "%s · %s" % (user, "%s/%s" % (owner, repo)),
+                    "body": first_line(comment.get("body")),
+                    "url": comment.get("html_url", ""),
+                })
+    return found
 
 
 def article(item):
@@ -441,6 +621,54 @@ def pullquote(quote):
     ) % (esc(quote["text"]), esc(quote["author"]))
 
 
+MERGE_PR_RE = re.compile(r"^Merge pull request #(\d+) from (\S+)")
+MERGE_BRANCH_RE = re.compile(r"^Merge branch '([^']+)'( into (\S+))?")
+
+
+def find_merges(commits):
+    """Merge commits as drama: whose branch landed, and where.
+
+    A merge from another author's fork is flagged cross-author; a
+    direct merge into main or master gets called out. Needs the
+    commit item's "login" field for the cross-author check.
+    """
+    found = []
+    for item in commits:
+        msg = item["headline"]
+        note = ""
+        match = MERGE_PR_RE.match(msg)
+        if match:
+            source = match.group(2)
+            owner = None
+            for sep in (":", "/"):
+                if sep in source:
+                    owner = source.split(sep)[0]
+                    break
+            merger = item.get("login", "")
+            if owner and merger and owner.lower() != merger.lower():
+                note = ("Cross-author merge: %s merged @%s's branch."
+                        % (merger, owner))
+            else:
+                note = "Merged branch %s." % source
+        else:
+            match = MERGE_BRANCH_RE.match(msg)
+            if not match:
+                continue
+            target = match.group(3) or ""
+            if target in ("main", "master"):
+                note = "Straight into %s." % target
+            else:
+                note = "Merged branch '%s'." % match.group(1)
+        found.append({
+            "year": item["year"],
+            "headline": msg,
+            "byline": item["byline"],
+            "body": note,
+            "url": item["url"],
+        })
+    return found
+
+
 def hottest_threads(opened, closed, limit=5, minimum=5):
     """The day's most-commented issues, deduped and hottest first."""
     seen = {}
@@ -461,27 +689,33 @@ def build_lede(repo, md_long, counts, years):
                 "nothing was committed, opened, closed, merged, or released "
                 "on this date." % (md_long, repo, span))
     bits = []
-    if counts["commits"]:
+    if counts.get("commits"):
         bits.append("%d commit%s" % (counts["commits"],
                                     "" if counts["commits"] == 1 else "s"))
-    if counts["opened"]:
+    if counts.get("opened"):
         bits.append("%d issue%s opened" % (counts["opened"],
                                           "" if counts["opened"] == 1 else "s"))
-    if counts["closed"]:
+    if counts.get("prs_opened"):
+        bits.append("%d pull request%s opened" % (
+            counts["prs_opened"], "" if counts["prs_opened"] == 1 else "s"))
+    if counts.get("closed"):
         bits.append("%d closed" % counts["closed"])
-    if counts["merged"]:
+    if counts.get("merged"):
         bits.append("%d pull request%s merged" % (
             counts["merged"], "" if counts["merged"] == 1 else "s"))
-    if counts["releases"]:
+    if counts.get("merges"):
+        bits.append("%d merge%s" % (counts["merges"],
+                                    "" if counts["merges"] == 1 else "s"))
+    if counts.get("releases"):
         bits.append("%d release%s" % (counts["releases"],
                                       "" if counts["releases"] == 1 else "s"))
-    if counts["tags"]:
+    if counts.get("tags"):
         bits.append("%d tag%s cut" % (counts["tags"],
                                       "" if counts["tags"] == 1 else "s"))
-    if counts["comments"]:
+    if counts.get("comments"):
         bits.append("%d notable comment%s" % (
             counts["comments"], "" if counts["comments"] == 1 else "s"))
-    if counts["drama"]:
+    if counts.get("drama"):
         bits.append("%d scandal%s" % (counts["drama"],
                                       "" if counts["drama"] == 1 else "s"))
     return ("On %s, across the years %s, %s saw %s."
@@ -545,10 +779,128 @@ def share_html(path):
         return ""
 
 
+def tag_repo(items, repo):
+    """Stamp gathered items with their repository."""
+    for item in items:
+        item["repo"] = repo
+    return items
+
+
+def gather_repos(repos, md, no_comments):
+    """Edition data across one or more repositories."""
+    current_year = dt.datetime.now().year
+    data = {"commits": [], "opened": [], "closed": [], "merged": [],
+            "releases": [], "tags": [], "comments": []}
+    created = []
+    private = False
+    for repo in repos:
+        info = api_get("/repos/%s" % repo)
+        created.append(year_of(info.get("created_at", "2020-01-01T00:00:00Z")))
+        private = private or bool(info.get("private"))
+        years = list(range(created[-1], current_year + 1))[-MAX_YEARS:]
+        data["commits"].extend(tag_repo(fetch_commits(repo, md, years), repo))
+        opened, closed = fetch_issues(repo, md)
+        data["opened"].extend(tag_repo(opened, repo))
+        data["closed"].extend(tag_repo(closed, repo))
+        data["merged"].extend(tag_repo(fetch_merged_prs(repo, md), repo))
+        repo_releases = tag_repo(fetch_releases(repo, md), repo)
+        data["releases"].extend(repo_releases)
+        data["tags"].extend(tag_repo(
+            fetch_tags(repo, md,
+                       {r["tag"] for r in repo_releases if r["tag"]}), repo))
+        if not no_comments:
+            data["comments"].extend(tag_repo(fetch_comments(repo, md), repo))
+    if len(repos) > 1:
+        for item in (data["commits"] + data["opened"] + data["closed"]
+                     + data["merged"] + data["releases"] + data["tags"]
+                     + data["comments"]):
+            item["byline"] = "%s · %s" % (item["byline"], item["repo"])
+    years = list(range(min(created), current_year + 1))[-MAX_YEARS:]
+    counts = {key: len(items) for key, items in data.items()}
+    drama = (find_reverts(data["commits"])
+             + hottest_threads(data["opened"], data["closed"]))
+    counts["drama"] = len(drama)
+    quote = find_quote(data["commits"], data["comments"])
+    body = "\n".join([
+        pullquote(quote),
+        section("Scandals & Corrections", drama),
+        section("★ Releases", data["releases"]),
+        section("From the Commit Ledger", data["commits"]),
+        section("Tags Cut", data["tags"]),
+        section("Issues Opened", data["opened"]),
+        section("Issues Closed", data["closed"]),
+        section("Pull Requests Merged", data["merged"]),
+        section("Voices From the Threads", data["comments"]),
+    ])
+    single = len(repos) == 1
+    return {
+        "title": repos[0] if single else ", ".join(repos),
+        "label": repos[0] if single else "%d repositories" % len(repos),
+        "years": years,
+        "counts": counts,
+        "body": body,
+        "record": ("Compiled from the private record" if private
+                   else "Compiled from the public record"),
+        "subject": {"repos": repos},
+    }
+
+
+def gather_author(user, md):
+    """Edition data for one user's full activity on the month-day.
+
+    Commits, issues and PRs opened, PRs merged, issues closed, and the
+    user's own comments, across every repository they touched. Built on
+    the commit and issue search APIs, so it is paced for search rate
+    limits.
+    """
+    info = api_get("/users/%s" % user)
+    created_year = year_of(info.get("created_at", "2020-01-01T00:00:00Z"))
+    current_year = dt.datetime.now().year
+    years = list(range(created_year, current_year + 1))[-MAX_YEARS:]
+    commits = author_commits(user, md, years)
+    opened, prs_opened, merged, closed = author_issues(user, md, years)
+    comments = author_comments(user, md, years)
+    counts = {"commits": len(commits), "opened": len(opened),
+              "prs_opened": len(prs_opened), "merged": len(merged),
+              "closed": len(closed), "comments": len(comments)}
+    drama = (find_reverts(commits)
+             + hottest_threads(opened + prs_opened, closed))
+    counts["drama"] = len(drama)
+    merges = find_merges(commits)
+    counts["merges"] = len(merges)
+    quote = find_quote(commits, comments)
+    body = "\n".join([
+        pullquote(quote),
+        section("Scandals & Corrections", drama),
+        section("Merges", merges),
+        section("From the Commit Ledger", commits),
+        section("Issues Opened", opened),
+        section("Pull Requests Opened", prs_opened),
+        section("Pull Requests Merged", merged),
+        section("Issues Closed", closed),
+        section("Voices From the Threads", comments),
+    ])
+    return {
+        "title": user,
+        "label": user,
+        "years": years,
+        "counts": counts,
+        "body": body,
+        "record": ("Compiled from the private record" if resolve_token()
+                   else "Compiled from the public record"),
+        "subject": {"author": user},
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
-        description="Generate an 'on this day' newspaper page for a repo.")
-    parser.add_argument("repo", help="Repository as owner/repo")
+        description="Generate an 'on this day' newspaper page: one or more "
+                    "repositories, or one author's activity across GitHub.")
+    parser.add_argument("repos", nargs="*",
+                        help="Repositories as owner/repo (one or more)")
+    parser.add_argument("--author", default="",
+                        help="Author mode: the month-day in USER's activity, "
+                             "across every repository they touched")
     parser.add_argument("--date", default="",
                         help="Month-day as MM-DD (default: today, local time)")
     parser.add_argument("--out", default="",
@@ -563,44 +915,24 @@ def main(argv=None):
                         version="the-daily-commit " + __version__)
     args = parser.parse_args(argv)
 
+    if args.author and args.repos:
+        parser.error("--author cannot be combined with repositories")
+    if not args.author and not args.repos:
+        parser.error("give one or more owner/repo repositories, "
+                     "or --author USER")
+
     if args.date:
         md = args.date
     else:
         md = dt.datetime.now().strftime("%m-%d")
     md_long = dt.datetime.strptime(md, "%m-%d").strftime("%B %d")
 
-    info = api_get("/repos/%s" % args.repo)
-    created_year = year_of(info.get("created_at", "2020-01-01T00:00:00Z"))
-    current_year = dt.datetime.now().year
-    years = list(range(created_year, current_year + 1))[-MAX_YEARS:]
+    if args.author:
+        edition = gather_author(args.author, md)
+    else:
+        edition = gather_repos(args.repos, md, args.no_comments)
 
-    commits = fetch_commits(args.repo, md, years)
-    opened, closed = fetch_issues(args.repo, md)
-    merged = fetch_merged_prs(args.repo, md)
-    releases = fetch_releases(args.repo, md)
-    release_tags = {r["tag"] for r in releases if r["tag"]}
-    tags = fetch_tags(args.repo, md, release_tags)
-    comments = [] if args.no_comments else fetch_comments(args.repo, md)
-
-    counts = {"commits": len(commits), "opened": len(opened),
-              "closed": len(closed), "merged": len(merged),
-              "releases": len(releases), "tags": len(tags),
-              "comments": len(comments)}
-    drama = find_reverts(commits) + hottest_threads(opened, closed)
-    counts["drama"] = len(drama)
-    quote = find_quote(commits, comments)
-
-    body = "\n".join([
-        pullquote(quote),
-        section("Scandals & Corrections", drama),
-        section("\u2605 Releases", releases),
-        section("From the Commit Ledger", commits),
-        section("Tags Cut", tags),
-        section("Issues Opened", opened),
-        section("Issues Closed", closed),
-        section("Pull Requests Merged", merged),
-        section("Voices From the Threads", comments),
-    ])
+    body = edition["body"]
     if not body.strip():
         body = '<p class="quiet">A quiet day in the archives.</p>'
 
@@ -608,13 +940,12 @@ def main(argv=None):
     with open(os.path.join(script_dir, "template.html"), encoding="utf-8") as f:
         template = f.read()
     page = (template
-            .replace("{{TITLE}}", esc(args.repo))
+            .replace("{{TITLE}}", esc(edition["title"]))
             .replace("{{DATELINE}}", esc(md_long))
-            .replace("{{RECORD}}", "Compiled from the private record"
-                     if info.get("private") else
-                     "Compiled from the public record")
-            .replace("{{LEDE}}", esc(build_lede(args.repo, md_long, counts,
-                                               years)))
+            .replace("{{RECORD}}", edition["record"])
+            .replace("{{LEDE}}", esc(build_lede(edition["label"], md_long,
+                                               edition["counts"],
+                                               edition["years"])))
             .replace("{{BODY}}", body))
 
     out_path = args.out
@@ -626,9 +957,11 @@ def main(argv=None):
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(page)
     share_url = share_html(out_path) if args.share else ""
-    print(json.dumps({"repo": args.repo, "date": md, "counts": counts,
-                      "out": out_path or "(stdout summary only)",
-                      "share": share_url or None}))
+    summary = {"date": md, "counts": edition["counts"],
+               "out": out_path or "(stdout summary only)",
+               "share": share_url or None}
+    summary.update(edition["subject"])
+    print(json.dumps(summary))
 
 
 if __name__ == "__main__":

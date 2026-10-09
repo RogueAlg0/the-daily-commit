@@ -477,16 +477,26 @@
         hour: '2-digit', minute: '2-digit', second: '2-digit'
       });
     }
-    // Night mode: 7pm to 7am local time
-    var hour = now.getHours();
-    if (hour >= 19 || hour < 7) {
-      document.body.classList.add('night');
-    } else {
-      document.body.classList.remove('night');
+    // Night mode: 7pm to 7am local time. The body may not exist
+    // yet when this runs in <head>, so guard it.
+    if (document.body) {
+      var hour = now.getHours();
+      if (hour >= 19 || hour < 7) {
+        document.body.classList.add('night');
+      } else {
+        document.body.classList.remove('night');
+      }
     }
   }
-  updateClock();
-  setInterval(updateClock, 1000);
+  function start() {
+    updateClock();
+    setInterval(updateClock, 1000);
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
 })();
 </script>
 </head>

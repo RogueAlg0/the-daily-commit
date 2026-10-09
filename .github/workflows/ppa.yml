@@ -16,7 +16,7 @@ jobs:
       - name: Install packaging tools
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq debhelper dput-ng devscripts
+          sudo apt-get install -y -qq build-essential debhelper dput-ng devscripts
       - name: Import the PPA signing key
         env:
           PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}

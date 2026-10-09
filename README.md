@@ -85,7 +85,9 @@ stay scannable without forced scrolling.
 
 The front page carries a gossip column, "Scandals & Corrections": revert
 commits (a revert of a revert is flagged as such) and the day's
-most-commented issue threads.
+most-commented issue threads. A pull-quote box features the day's most
+quotable commit message or comment, attributed to its author, when one
+clears the funniness bar.
 
 ## Sharing an edition
 

@@ -843,8 +843,12 @@ def author_comments(user, mds, years):
     return found
 
 
-def article(item):
-    """Render one event as a newspaper article block."""
+def article(item, style=""):
+    """Render one event as a newspaper article block.
+
+    Style can be "lead-story" (big, spans columns), "brief" (compact
+    one-liner), or "" (standard).
+    """
     body = "<p>%s</p>" % esc(item["body"]) if item["body"] else ""
     if item["url"]:
         headline = '<h3><a href="%s">%s</a></h3>' % (
@@ -866,31 +870,42 @@ def article(item):
                                  [esc(p) for p in parts[1:]])
     else:
         byline_html = esc(byline)
+    cls = ' class="%s"' % style if style else ""
     return (
-        "<article>\n"
+        "<article%s>\n"
         "  %s\n"
         '  <div class="byline">By %s &middot; %s</div>\n'
         "  %s\n"
         "</article>"
-    ) % (headline, byline_html, esc(str(item["year"])), body)
+    ) % (cls, headline, byline_html, esc(str(item["year"])), body)
 
 
-def section(title, items, preview=5):
+def section(title, items, preview=5, lead=False, brief=False):
     """Render a section showing the first few articles.
 
     The rest hide behind a <details> expander: pure HTML, no JavaScript,
     so it works in every sandbox the page might be served from.
+
+    Lead=True makes the first item a big lead story spanning columns.
+    Brief=True renders all items as compact one-liners.
     """
     if not items:
         return ""
     items = sorted(items, key=lambda i: (i["year"], i["headline"]))
     shown, rest = items[:preview], items[preview:]
     parts = ["<section>", "<h2>%s</h2>" % esc(title)]
-    parts.extend(article(i) for i in shown)
+    for idx, item in enumerate(shown):
+        if brief:
+            parts.append(article(item, style="brief"))
+        elif lead and idx == 0:
+            parts.append(article(item, style="lead-story"))
+        else:
+            parts.append(article(item))
     if rest:
         parts.append('<details class="more"><summary>Show all %d</summary>'
                      % len(items))
-        parts.extend(article(i) for i in rest)
+        style = "brief" if brief else ""
+        parts.extend(article(i, style=style) for i in rest)
         parts.append("</details>")
     parts.append("</section>")
     return "\n".join(parts)
@@ -1034,6 +1049,26 @@ def find_quips(commits):
         if headline.strip().endswith("?"):
             results["question"].append(item)
     return {k: v for k, v in results.items() if v}
+
+
+def overheard_box(quips):
+    """Sidebar of funny things people wrote. Not inline articles.
+
+    A newspaper doesn't list every quip as a full story; it puts
+    the best ones in a box. That's what this is.
+    """
+    if not quips:
+        return ""
+    parts = ['<div class="overheard">', "<h3>Overheard</h3>"]
+    for item in quips[:6]:
+        who = item.get("byline", "")
+        if " · " in who:
+            who = who.split(" · ", 1)[0]
+        parts.append(
+            '<div class="quip">"%s" <span class="who">— %s</span></div>'
+            % (esc(item["headline"]), esc(who)))
+    parts.append("</div>")
+    return "\n".join(parts)
 
 
 def curate_drama(candidates_by_type, limit=5, seed=""):
@@ -1490,8 +1525,10 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(data["commits"])
     candidates["revert"] = find_reverts(data["commits"])
-    drama = (curate_drama(candidates, limit=5, seed=seed)
-             + hottest_threads(data["opened"], data["closed"]))
+    quips = curate_drama(candidates, limit=5, seed=seed)
+    for q in quips:
+        q["quip_type"] = "quip"
+    drama = (quips + hottest_threads(data["opened"], data["closed"]))
     counts["drama"] = len(drama)
     merges = find_merges(data["commits"])
     counts["merges"] = len(merges)
@@ -1506,17 +1543,22 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
         item["merged"] = True
     docket_items = (data["commits"] + data["opened"] + data["closed"]
                     + data["merged"])
+    # Separate serious drama (reverts, hot threads) from quips.
+    # Quips go in the Overheard sidebar, not as full articles.
+    serious = [d for d in drama if d.get("quip_type") != "quip"]
+    quip_items = [d for d in drama if d.get("quip_type") == "quip"]
     sections = [
         pullquote(quote),
-        section("Scandals & Corrections", drama),
+        overheard_box(quip_items),
+        section("Scandals & Corrections", serious),
         build_docket(docket_items, ticket_url),
         section("Merges", merges),
-        section("Releases", data["releases"]),
-        section("From the Commit Ledger", data["commits"]),
-        section("Tags Cut", data["tags"]),
-        section("Issues Opened", data["opened"]),
-        section("Issues Closed", data["closed"]),
-        section("Pull Requests Merged", data["merged"]),
+        section("Releases", data["releases"], lead=True),
+        section("From the Commit Ledger", data["commits"], lead=True),
+        section("Tags Cut", data["tags"], brief=True),
+        section("Issues Opened", data["opened"], brief=True),
+        section("Issues Closed", data["closed"], brief=True),
+        section("Pull Requests Merged", data["merged"], lead=True),
         section("Voices From the Threads", data["comments"]),
     ]
     if week_days:
@@ -1581,8 +1623,10 @@ def gather_author(user, mds, week_days=(), ticket_url=""):
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(commits)
     candidates["revert"] = find_reverts(commits)
-    drama = (curate_drama(candidates, limit=5, seed=seed)
-             + hottest_threads(opened + prs_opened, closed))
+    quips = curate_drama(candidates, limit=5, seed=seed)
+    for q in quips:
+        q["quip_type"] = "quip"
+    drama = (quips + hottest_threads(opened + prs_opened, closed))
     counts["drama"] = len(drama)
     merges = find_merges(commits)
     counts["merges"] = len(merges)
@@ -1597,16 +1641,19 @@ def gather_author(user, mds, week_days=(), ticket_url=""):
         item["kind"] = "PR"
         item["merged"] = True
     docket_items = commits + opened + prs_opened + merged + closed
+    serious = [d for d in drama if d.get("quip_type") != "quip"]
+    quip_items = [d for d in drama if d.get("quip_type") == "quip"]
     sections = [
         pullquote(quote),
-        section("Scandals & Corrections", drama),
+        overheard_box(quip_items),
+        section("Scandals & Corrections", serious),
         build_docket(docket_items, ticket_url),
         section("Merges", merges),
-        section("From the Commit Ledger", commits),
-        section("Issues Opened", opened),
-        section("Pull Requests Opened", prs_opened),
-        section("Pull Requests Merged", merged),
-        section("Issues Closed", closed),
+        section("From the Commit Ledger", commits, lead=True),
+        section("Issues Opened", opened, brief=True),
+        section("Pull Requests Opened", prs_opened, brief=True),
+        section("Pull Requests Merged", merged, lead=True),
+        section("Issues Closed", closed, brief=True),
         section("Voices From the Threads", comments),
     ]
     if week_days:

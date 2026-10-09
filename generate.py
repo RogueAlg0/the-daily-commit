@@ -1106,6 +1106,23 @@ def new_voices_box(voices, seed=""):
     return "\n".join(parts)
 
 
+def charm_box(title, items):
+    """A small charm section: weather, marriages, letters, etc."""
+    if not items:
+        return ""
+    parts = ['<div class="charm-box">', "<h4>%s</h4>" % esc(title)]
+    for item in items:
+        parts.append('<div class="item">')
+        if item.get("headline"):
+            parts.append('<span class="headline">%s</span>' %
+                         esc(item["headline"]))
+        if item.get("body"):
+            parts.append('<br>%s' % esc(item["body"]))
+        parts.append('</div>')
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
 def curate_drama(candidates_by_type, limit=5, seed=""):
     """A newspaper editor, not a firehose.
 
@@ -1332,6 +1349,132 @@ def find_new_voices(commits):
                 "author_url": profile_url(login),
             })
     return voices
+
+
+def repo_weather(commits, merges, issues):
+    """Commit activity as a weather report.
+
+    Pure charm: the repo's activity becomes a forecast.
+    """
+    n_commits = len(commits)
+    n_merges = len(merges)
+    n_issues = len(issues)
+    if n_commits == 0:
+        return "Clear skies. No activity today."
+    parts = []
+    if n_commits >= 20:
+        parts.append("Heavy commit showers (%d)" % n_commits)
+    elif n_commits >= 10:
+        parts.append("Steady commits (%d)" % n_commits)
+    elif n_commits >= 5:
+        parts.append("Light commit drizzle (%d)" % n_commits)
+    else:
+        parts.append("A few commits (%d)" % n_commits)
+    if n_merges > 0:
+        parts.append("with a chance of merges (%d)" % n_merges)
+    if n_issues > 0:
+        parts.append("and scattered issues (%d)" % n_issues)
+    return ", ".join(parts) + "."
+
+
+def marriage_announcements(merges):
+    """Merged branches as wedding announcements."""
+    if not merges:
+        return []
+    announcements = []
+    for m in merges[:5]:
+        # Extract branch names from merge message
+        msg = m["headline"]
+        # "Merge pull request #123 from user/branch" or "Merge branch 'x'"
+        import re
+        match = re.search(r"from \S+/(\S+)", msg)
+        if match:
+            branch = match.group(1)
+            announcements.append({
+                "headline": "%s weds main" % branch,
+                "byline": m["byline"],
+                "body": "In a beautiful ceremony, branch '%s' was joined "
+                        "in holy matrimony to main." % branch,
+                "url": m["url"],
+            })
+        else:
+            match = re.search(r"Merge branch '([^']+)'", msg)
+            if match:
+                branch = match.group(1)
+                announcements.append({
+                    "headline": "%s weds %s" % (branch, "main"),
+                    "byline": m["byline"],
+                    "body": "Branch '%s' and main are now one." % branch,
+                    "url": m["url"],
+                })
+    return announcements
+
+
+def letters_to_editor(commits):
+    """Commit messages that sound like complaints, as letters."""
+    if not commits:
+        return []
+    import re
+    # Messages with frustration markers
+    patterns = [
+        (r"\bfix\b.*\bbug\b", "Dear Editor,"),
+        (r"\bhate\b", "Dear Editor,"),
+        (r"\bannoying\b", "Dear Editor,"),
+        (r"\bbroken\b", "Dear Editor,"),
+        (r"\bwhy\b.*\?", "Dear Editor,"),
+    ]
+    letters = []
+    for c in commits:
+        msg = c["headline"].lower()
+        for pattern, _ in patterns:
+            if re.search(pattern, msg):
+                letters.append({
+                    "headline": "Letter: %s" % c["headline"][:50],
+                    "byline": c["byline"],
+                    "body": '"%s" - %s' % (c["headline"], c["byline"]),
+                    "url": c["url"],
+                })
+                break
+        if len(letters) >= 3:
+            break
+    return letters
+
+
+def missed_connections(issues_opened, issues_closed):
+    """Opened-but-unclosed issues as missed connections."""
+    # Issues that were opened but never closed (still open)
+    # For simplicity: opened issues that don't appear in closed
+    closed_numbers = {i.get("number") for i in issues_closed if i.get("number")}
+    missed = []
+    for issue in issues_opened[:5]:
+        if issue.get("number") not in closed_numbers:
+            missed.append({
+                "headline": "Missed Connection: #%s" % issue.get("number"),
+                "byline": issue["byline"],
+                "body": "You: %s. Me: still waiting. Let's try again?" %
+                        issue["headline"][:60],
+                "url": issue["url"],
+            })
+    return missed
+
+
+def classified_ads(seed=""):
+    """Vintage-style fake classified ads. Pure template, no data."""
+    import random
+    rng = random.Random(seed)
+    ads = [
+        "WANTED: Meaningful commit messages. No 'fix stuff'. Reward offered.",
+        "FOR SALE: One slightly used merge conflict. As-is. No returns.",
+        "LOST: My patience during rebase. If found, please return.",
+        "HELP WANTED: Someone to review my PR. Please. Anyone.",
+        "FOR TRADE: My technical debt for your clean architecture.",
+        "NOTICE: The 'it works on my machine' defense is no longer valid.",
+        "WANTED: A bug that reproduces consistently. Generous reward.",
+        "FOR SALE: Slightly used keyboard. Keys W, A, S, D worn out.",
+    ]
+    selected = rng.sample(ads, min(3, len(ads)))
+    return [{"headline": "Classified", "byline": "", "body": ad, "url": ""}
+            for ad in selected]
 
 
 def build_docket(items, ticket_url_base=""):
@@ -1618,6 +1761,12 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     quip_items = [d for d in drama if d.get("quip_type") == "quip"]
     voices = find_new_voices(data["commits"])
     seed = "%s-%s" % (mds[0] if mds else "", span)
+    # Charm sections
+    weather_text = repo_weather(data["commits"], merges, data["opened"])
+    marriages = marriage_announcements(merges)
+    letters = letters_to_editor(data["commits"])
+    missed = missed_connections(data["opened"], data["closed"])
+    ads = classified_ads(seed=seed)
     sections = [
         pullquote(quote),
         new_voices_box(voices, seed=seed),
@@ -1632,6 +1781,11 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
         section("Issues Closed", data["closed"], brief=True),
         section("Pull Requests Merged", data["merged"], lead=True),
         section("Voices From the Threads", data["comments"]),
+        charm_box("Weather", [{"headline": "", "body": weather_text}]),
+        charm_box("Marriages", marriages),
+        charm_box("Letters to the Editor", letters),
+        charm_box("Missed Connections", missed),
+        charm_box("Classifieds", ads),
     ]
     if week_days:
         pairs = [("commit", "commits", data["commits"]),

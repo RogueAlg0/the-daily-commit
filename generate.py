@@ -210,6 +210,251 @@ def esc(text):
     return html.escape(text or "", quote=True)
 
 
+def profile_url(login):
+    """GitHub profile URL for a login, or "" when not linkable."""
+    if login and login != "unknown" and re.match(r"^[A-Za-z0-9-]+$", login):
+        return "https://github.com/" + login
+    return ""
+
+
+class Platform:
+    """A git hosting platform: URL patterns for web links.
+
+    Subclasses define the web URL shapes for commits, pull requests,
+    issues, releases, and user profiles. The API client for data
+    fetching is separate (see GitHubAPI below).
+    """
+    name = "unknown"
+    web_base = ""
+
+    def repo_url(self, owner, repo):
+        return "%s/%s/%s" % (self.web_base, owner, repo)
+
+    def commit_url(self, owner, repo, sha):
+        raise NotImplementedError
+
+    def pr_url(self, owner, repo, number):
+        raise NotImplementedError
+
+    def issue_url(self, owner, repo, number):
+        raise NotImplementedError
+
+    def profile_url(self, login):
+        if login and login != "unknown":
+            return "%s/%s" % (self.web_base, login)
+        return ""
+
+
+class GitHubPlatform(Platform):
+    name = "github"
+    web_base = "https://github.com"
+
+    def commit_url(self, owner, repo, sha):
+        return "%s/%s/%s/commit/%s" % (self.web_base, owner, repo, sha)
+
+    def pr_url(self, owner, repo, number):
+        return "%s/%s/%s/pull/%s" % (self.web_base, owner, repo, number)
+
+    def issue_url(self, owner, repo, number):
+        return "%s/%s/%s/issues/%s" % (self.web_base, owner, repo, number)
+
+
+class GitLabPlatform(Platform):
+    name = "gitlab"
+    web_base = "https://gitlab.com"
+
+    def commit_url(self, owner, repo, sha):
+        return "%s/%s/%s/-/commit/%s" % (self.web_base, owner, repo, sha)
+
+    def pr_url(self, owner, repo, number):
+        return "%s/%s/%s/-/merge_requests/%s" % (
+            self.web_base, owner, repo, number)
+
+    def issue_url(self, owner, repo, number):
+        return "%s/%s/%s/-/issues/%s" % (self.web_base, owner, repo, number)
+
+
+class BitbucketPlatform(Platform):
+    name = "bitbucket"
+    web_base = "https://bitbucket.org"
+
+    def commit_url(self, owner, repo, sha):
+        return "%s/%s/%s/commits/%s" % (self.web_base, owner, repo, sha)
+
+    def pr_url(self, owner, repo, number):
+        return "%s/%s/%s/pull-requests/%s" % (
+            self.web_base, owner, repo, number)
+
+    def issue_url(self, owner, repo, number):
+        return "%s/%s/%s/issues/%s" % (self.web_base, owner, repo, number)
+
+
+class GiteaPlatform(Platform):
+    """Gitea and Forgejo: GitHub-compatible URL shapes."""
+    name = "gitea"
+    web_base = ""
+
+    def __init__(self, base_url=""):
+        self.web_base = base_url.rstrip("/")
+
+    def commit_url(self, owner, repo, sha):
+        return "%s/%s/%s/commit/%s" % (self.web_base, owner, repo, sha)
+
+    def pr_url(self, owner, repo, number):
+        return "%s/%s/%s/pulls/%s" % (self.web_base, owner, repo, number)
+
+    def issue_url(self, owner, repo, number):
+        return "%s/%s/%s/issues/%s" % (self.web_base, owner, repo, number)
+
+
+class GenericGitPlatform(Platform):
+    """Fallback for any git host: uses GitHub-style URLs.
+
+    Most git forges (Gitea, Forgejo, SourceHut, etc.) copy GitHub's
+    URL shapes. When the platform is unknown, this is the best guess.
+    Override with --platform if the host uses different patterns.
+    """
+    name = "generic"
+
+    def __init__(self, base_url=""):
+        self.web_base = base_url.rstrip("/")
+
+    def commit_url(self, owner, repo, sha):
+        return "%s/%s/%s/commit/%s" % (self.web_base, owner, repo, sha)
+
+    def pr_url(self, owner, repo, number):
+        return "%s/%s/%s/pull/%s" % (self.web_base, owner, repo, number)
+
+    def issue_url(self, owner, repo, number):
+        return "%s/%s/%s/issues/%s" % (self.web_base, owner, repo, number)
+
+
+PLATFORMS = {
+    "github.com": GitHubPlatform(),
+    "gitlab.com": GitLabPlatform(),
+    "bitbucket.org": BitbucketPlatform(),
+}
+
+# Hosts that run Gitea/Forgejo (GitHub-compatible). Add more as found.
+GITEA_HOSTS = {"gitea.com", "codeberg.org"}
+
+
+def detect_platform(repo_ref, platform_hint=""):
+    """Detect the platform from a repo reference.
+
+    Accepts "owner/repo" (assumes GitHub), a full HTTPS URL, or an
+    SSH-style "git@host:owner/repo.git". Returns (platform, owner, repo).
+
+    The platform_hint ("github", "gitlab", "bitbucket", "gitea",
+    "generic") overrides auto-detection for self-hosted or unusual
+    forges. Unknown hosts fall back to GenericGitPlatform with
+    GitHub-style URLs.
+    """
+    if platform_hint:
+        hint = platform_hint.lower()
+        if hint == "github":
+            plat = GitHubPlatform()
+        elif hint == "gitlab":
+            plat = GitLabPlatform()
+        elif hint == "bitbucket":
+            plat = BitbucketPlatform()
+        elif hint in ("gitea", "forgejo"):
+            plat = GiteaPlatform()
+        else:
+            plat = GenericGitPlatform()
+        # Re-parse just to get owner/repo/host.
+        _, owner, repo, host = _parse_repo_ref(repo_ref)
+        if hasattr(plat, "web_base") and not plat.web_base and host:
+            plat.web_base = "https://" + host
+        return plat, owner, repo
+
+    platform, owner, repo, host = _parse_repo_ref(repo_ref)
+    return platform, owner, repo
+
+
+def _parse_repo_ref(repo_ref):
+    """Parse a repo ref into (platform, owner, repo, host)."""
+    # SSH style: git@github.com:owner/repo.git
+    m = re.match(r"git@([^:]+):([^/]+)/(.+?)(?:\.git)?$", repo_ref)
+    if m:
+        host, owner, repo = m.groups()
+        return _platform_for_host(host), owner, repo, host
+    # HTTPS URL: https://github.com/owner/repo
+    m = re.match(r"https?://([^/]+)/([^/]+)/(.+?)(?:\.git)?$", repo_ref)
+    if m:
+        host, owner, repo = m.groups()
+        return _platform_for_host(host), owner, repo, host
+    # Bare owner/repo: assume GitHub (backwards compatible).
+    if "/" in repo_ref:
+        owner, repo = repo_ref.split("/", 1)
+        return GitHubPlatform(), owner, repo, "github.com"
+    raise ValueError("Cannot parse repo reference: %s" % repo_ref)
+
+
+def _platform_for_host(host):
+    """Return the Platform for a hostname, with smart fallbacks."""
+    host = host.lower()
+    if host in PLATFORMS:
+        return PLATFORMS[host]
+    if host in GITEA_HOSTS:
+        return GiteaPlatform("https://" + host)
+    # Self-hosted GitLab often has "gitlab" in the hostname.
+    if "gitlab" in host:
+        plat = GitLabPlatform()
+        plat.web_base = "https://" + host
+        return plat
+    # Unknown host: generic GitHub-style URLs. Works for most forges.
+    return GenericGitPlatform("https://" + host)
+
+
+class APIClient:
+    """Abstract data source for one platform.
+
+    Each platform implements these to fetch the raw activity data.
+    The newspaper logic (filtering by month-day, scoring, rendering)
+    stays platform-agnostic and works on the normalized item dicts.
+    """
+
+    def __init__(self, platform, token=""):
+        self.platform = platform
+        self.token = token
+
+    def repo_info(self, owner, repo):
+        """Basic repo metadata: created_at, private, etc."""
+        raise NotImplementedError
+
+    def commits(self, owner, repo, since, until):
+        """Commits in the date range. Yields normalized dicts."""
+        raise NotImplementedError
+
+    def issues(self, owner, repo, state="all"):
+        """Issues (not PRs) with created/closed dates."""
+        raise NotImplementedError
+
+    def pull_requests(self, owner, repo, state="closed"):
+        """Pull/merge requests with merged dates."""
+        raise NotImplementedError
+
+    def releases(self, owner, repo):
+        """Releases with published dates."""
+        raise NotImplementedError
+
+    def comments(self, owner, repo, since, until):
+        """Issue/PR comments in the date range."""
+        raise NotImplementedError
+
+
+class GitHubAPIClient(APIClient):
+    """GitHub REST API client. Wraps the existing api_get/api_paged."""
+
+    def repo_info(self, owner, repo):
+        return api_get("/repos/%s/%s" % (owner, repo))
+
+    # commits(), issues(), etc. delegate to the existing fetch_*
+    # functions, which already speak GitHub REST. GitLab and Bitbucket
+    # subclasses will override with their own endpoints and pagination.
+
+
 def first_line(text):
     line = (text or "").strip().split("\n")[0].strip()
     return line if len(line) <= 140 else line[:137] + "..."
@@ -229,6 +474,7 @@ def fetch_commits(repo, mds, years):
                 day = month_day((info.get("committer") or {}).get("date"))
                 if day not in mds:
                     continue
+                login = (commit.get("author") or {}).get("login") or ""
                 found.append({
                     "year": year,
                     "day": day,
@@ -236,7 +482,8 @@ def fetch_commits(repo, mds, years):
                     "byline": author,
                     "body": commit.get("sha", "")[:7],
                     "url": commit.get("html_url", ""),
-                    "login": (commit.get("author") or {}).get("login") or "",
+                    "login": login,
+                    "author_url": profile_url(login),
                 })
     return found
 
@@ -261,30 +508,32 @@ def fetch_issues(repo, mds):
             if number in seen:
                 continue
             seen.add(number)
-        url = issue.get("html_url", "")
-        byline = (issue.get("user") or {}).get("login") or "unknown"
-        created_day = month_day(issue.get("created_at"))
-        if created_day in mds:
-            opened.append({
-                "year": year_of(issue["created_at"]),
-                "day": created_day,
-                "headline": "#%s %s" % (number, first_line(issue.get("title"))),
-                "byline": byline,
-                "body": first_line(issue.get("body")),
-                "url": url,
-                "comments": issue.get("comments", 0),
-            })
-        closed_day = month_day(issue.get("closed_at"))
-        if closed_day in mds:
-            closed.append({
-                "year": year_of(issue["closed_at"]),
-                "day": closed_day,
-                "headline": "#%s %s" % (number, first_line(issue.get("title"))),
-                "byline": byline,
-                "body": first_line(issue.get("body")),
-                "url": url,
-                "comments": issue.get("comments", 0),
-            })
+            url = issue.get("html_url", "")
+            byline = (issue.get("user") or {}).get("login") or "unknown"
+            created_day = month_day(issue.get("created_at"))
+            if created_day in mds:
+                opened.append({
+                    "year": year_of(issue["created_at"]),
+                    "day": created_day,
+                    "headline": "#%s %s" % (number, first_line(issue.get("title"))),
+                    "byline": byline,
+                    "body": first_line(issue.get("body")),
+                    "url": url,
+                    "comments": issue.get("comments", 0),
+                    "author_url": profile_url(byline),
+                })
+            closed_day = month_day(issue.get("closed_at"))
+            if closed_day in mds:
+                closed.append({
+                    "year": year_of(issue["closed_at"]),
+                    "day": closed_day,
+                    "headline": "#%s %s" % (number, first_line(issue.get("title"))),
+                    "byline": byline,
+                    "body": first_line(issue.get("body")),
+                    "url": url,
+                    "comments": issue.get("comments", 0),
+                    "author_url": profile_url(byline),
+                })
     return opened, closed
 
 
@@ -594,13 +843,28 @@ def article(item):
             esc(item["url"]), esc(item["headline"]) or "(untitled)")
     else:
         headline = "<h3>%s</h3>" % (esc(item["headline"]) or "(untitled)")
+    # Link the author name when we have their GitHub profile URL.
+    # The byline may be "author" or "author · repo"; link the author part.
+    # Falls back to treating the byline author as a GitHub login.
+    byline = item["byline"]
+    author_url = item.get("author_url")
+    if not author_url:
+        author_url = profile_url(byline.split(" · ", 1)[0])
+    if author_url:
+        parts = byline.split(" · ", 1)
+        parts[0] = '<a href="%s">%s</a>' % (
+            esc(author_url), esc(parts[0]))
+        byline_html = " · ".join([parts[0]] +
+                                 [esc(p) for p in parts[1:]])
+    else:
+        byline_html = esc(byline)
     return (
         "<article>\n"
         "  %s\n"
         '  <div class="byline">By %s &middot; %s</div>\n'
         "  %s\n"
         "</article>"
-    ) % (headline, esc(item["byline"]), esc(str(item["year"])), body)
+    ) % (headline, byline_html, esc(str(item["year"])), body)
 
 
 def section(title, items, preview=5):
@@ -1308,6 +1572,11 @@ def main(argv=None):
                         help="Base URL for ticket keys (e.g. "
                              "https://tracker.example.com/browse): "
                              "keys like ABC-123 become links")
+    parser.add_argument("--platform", default="",
+                        choices=["", "github", "gitlab", "bitbucket",
+                                 "gitea", "forgejo", "generic"],
+                        help="Override platform auto-detection for the repo "
+                             "host (for self-hosted or unusual forges)")
     args = parser.parse_args(argv)
 
     if args.author and args.repos:

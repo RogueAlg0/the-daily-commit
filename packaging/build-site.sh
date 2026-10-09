@@ -42,10 +42,10 @@ for offset in -1 0 1; do
   MD=$(date -u -d "$offset day" +%m-%d)
   ADATES="$ADATES \"$MD\","
   if [ "$offset" -eq 0 ]; then
-    SUMMARY=$(python3 generate.py --author RogueAlg0 --date "$MD" \
-      --out "$SITE/author/$MD.html")
-    echo "$SUMMARY" | python3 packaging/author-card.py \
-      > "$SITE/author/card.svg"
+    python3 generate.py --author RogueAlg0 --date "$MD" --card \
+      --out "$SITE/author/card.svg" >/dev/null
+    python3 generate.py --author RogueAlg0 --date "$MD" \
+      --out "$SITE/author/$MD.html" >/dev/null
   else
     python3 generate.py --author RogueAlg0 --date "$MD" \
       --out "$SITE/author/$MD.html" >/dev/null

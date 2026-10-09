@@ -1021,6 +1021,79 @@ def gather_author(user, mds, week_days=()):
     }
 
 
+def card_bits(counts):
+    """Short human stat phrases for the SVG card, skipping zeros."""
+    bits = []
+    n = counts.get("commits", 0)
+    if n:
+        bits.append("%d commit%s" % (n, "" if n == 1 else "s"))
+    n = counts.get("merged", 0)
+    if n:
+        bits.append("%d PR%s merged" % (n, "" if n == 1 else "s"))
+    n = counts.get("prs_opened", 0)
+    if n:
+        bits.append("%d PR%s opened" % (n, "" if n == 1 else "s"))
+    n = counts.get("closed", 0)
+    if n:
+        bits.append("%d issue%s closed" % (n, "" if n == 1 else "s"))
+    n = counts.get("opened", 0)
+    if n:
+        bits.append("%d issue%s opened" % (n, "" if n == 1 else "s"))
+    return bits
+
+
+CARD_SIZES = {"sm": (300, 85), "md": (600, 170), "lg": (900, 255)}
+
+
+def render_paper_card(label, date_label, link_label, counts, size):
+    """Newspaper-style SVG card. Pure static SVG, no scripts."""
+    width, height = CARD_SIZES[size]
+    stats = " · ".join(card_bits(counts)) or "a quiet day in the archives"
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d"'
+        ' viewBox="0 0 600 170" role="img">'
+        '<rect width="600" height="170" fill="#f5f1e6" stroke="#8a8272"'
+        ' stroke-width="2"/>'
+        '<text x="30" y="38" font-family="Georgia, serif" font-size="15"'
+        ' letter-spacing="4" fill="#6b655a">THE DAILY COMMIT</text>'
+        '<text x="30" y="82" font-family="Georgia, serif" font-size="34"'
+        ' font-weight="bold" fill="#1c1a16">%s</text>'
+        '<text x="30" y="114" font-family="Georgia, serif" font-size="16"'
+        ' fill="#1c1a16">%s</text>'
+        '<text x="30" y="140" font-family="Georgia, serif" font-size="14"'
+        ' fill="#6b655a">%s</text>'
+        '<text x="30" y="160" font-family="Georgia, serif" font-size="11"'
+        ' fill="#8a8272">%s</text>'
+        "</svg>"
+        % (width, height, esc(label), esc(date_label), esc(stats),
+           esc(link_label)))
+
+
+def render_badge_card(counts):
+    """Shields-style flat badge SVG with the headline stat."""
+    bits = card_bits(counts)
+    left, right = "daily commit", bits[0] if bits else "quiet day"
+    lw = int(len(left) * 6.5 + 12)
+    rw = int(len(right) * 6.5 + 12)
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="20"'
+        ' role="img">'
+        '<rect width="%d" height="20" fill="#555"/>'
+        '<rect x="%d" width="%d" height="20" fill="#4c1"/>'
+        '<text x="6" y="14" font-family="Verdana, sans-serif" font-size="11"'
+        ' fill="#fff">%s</text>'
+        '<text x="%d" y="14" font-family="Verdana, sans-serif" font-size="11"'
+        ' fill="#fff">%s</text>'
+        "</svg>"
+        % (lw + rw, lw, lw, rw, esc(left), lw + 6, esc(right)))
+
+
+def render_card(label, date_label, link_label, counts, size, style):
+    if style == "badge":
+        return render_badge_card(counts)
+    return render_paper_card(label, date_label, link_label, counts, size)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description="Generate an 'on this day' newspaper page: one or more "
@@ -1033,7 +1106,18 @@ def main(argv=None):
     parser.add_argument("--date", default="",
                         help="Month-day as MM-DD (default: today, local time)")
     parser.add_argument("--out", default="",
-                        help="Output HTML path (default: print a summary)")
+                        help="Output path (default: print a summary; "
+                             "with --card, print the SVG)")
+    parser.add_argument("--card", action="store_true",
+                        help="Emit a standalone SVG card instead of the "
+                             "HTML page, for embedding in README files")
+    parser.add_argument("--card-size", default="md",
+                        choices=("sm", "md", "lg"),
+                        help="Card size (default: md)")
+    parser.add_argument("--card-style", default="paper",
+                        choices=("paper", "badge"),
+                        help="Card style: newspaper card or shields-style "
+                             "badge (default: paper)")
     parser.add_argument("--no-comments", action="store_true",
                         help="Skip the comments section")
     parser.add_argument("--share", action="store_true",
@@ -1058,6 +1142,8 @@ def main(argv=None):
                      "or --author USER")
     if args.week_url and not args.author:
         parser.error("--week-url needs --author")
+    if args.card and args.share:
+        parser.error("--card cannot be combined with --share")
 
     now = dt.datetime.now()
     if args.date:
@@ -1089,6 +1175,19 @@ def main(argv=None):
         edition = gather_author(args.author, mds, week_days)
     else:
         edition = gather_repos(args.repos, mds, args.no_comments, week_days)
+
+    if args.card:
+        link = ("github.com/%s" % args.author if args.author
+                else "github.com/%s" % args.repos[0])
+        svg = render_card(edition["label"], md_long, link,
+                          edition["counts"], args.card_size,
+                          args.card_style)
+        if args.out:
+            with open(args.out, "w", encoding="utf-8") as f:
+                f.write(svg)
+        else:
+            print(svg)
+        return
 
     body = edition["body"]
     if not body.strip():

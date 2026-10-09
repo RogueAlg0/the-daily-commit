@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Daily Commit</title>
+<script>
+  // The viewer's local date picks the edition. latest.json lists what
+  // the daily cron published; fall back to the newest on any mismatch.
+  function localMd() {
+    var d = new Date();
+    return String(d.getMonth() + 1).padStart(2, "0") + "-" +
+           String(d.getDate()).padStart(2, "0");
+  }
+  fetch("daily/latest.json").then(function (r) { return r.json(); }).then(
+    function (m) {
+      var dates = m.dates || [];
+      var md = localMd();
+      var target = dates.indexOf(md) >= 0 ? md : dates[dates.length - 1];
+      if (target) location.replace("daily/" + target + ".html");
+    }).catch(function () {
+      location.replace("daily/" + localMd() + ".html");
+    });
+</script>
+</head>
+<body>
+<p>Loading today's paper…</p>
+<p><a href="daily/">Browse the editions</a> ·
+<a href="apt/">Install with apt</a></p>
+</body>
+</html>

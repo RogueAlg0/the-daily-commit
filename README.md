@@ -1,6 +1,6 @@
 # The Daily Commit
 
-[![Install with apt](https://img.shields.io/badge/apt-install-blue?logo=debian)](https://roguealg0.github.io/the-daily-commit/)
+[![Install with apt](https://img.shields.io/badge/apt-install-blue?logo=debian)](https://roguealg0.github.io/the-daily-commit/apt/)
 [![Latest release](https://img.shields.io/github/v/release/RogueAlg0/the-daily-commit)](https://github.com/RogueAlg0/the-daily-commit/releases)
 [![CI](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml/badge.svg)](https://github.com/RogueAlg0/the-daily-commit/actions/workflows/check.yml)
 
@@ -17,12 +17,16 @@ and works offline.
 Run it locally whenever you want an edition. Nothing leaves your machine
 unless you choose to share the file.
 
+See it live: [roguealg0.github.io/the-daily-commit](https://roguealg0.github.io/the-daily-commit/)
+shows this repository's own paper for today's date in your local time,
+rebuilt daily.
+
 ## Install
 
 ### apt (Debian/Ubuntu)
 
 ```sh
-echo "deb [trusted=yes] https://roguealg0.github.io/the-daily-commit/ ./" \
+echo "deb [trusted=yes] https://roguealg0.github.io/the-daily-commit/apt/ ./" \
   | sudo tee /etc/apt/sources.list.d/the-daily-commit.list
 sudo apt update && sudo apt install the-daily-commit
 ```
@@ -83,6 +87,20 @@ direct merges into main or master. Pull request headlines show their
 `head → base` branches. Branch creation and deletion dates are not
 available: GitHub keeps no historical branch record beyond 90 days of
 events.
+
+### Week mode
+
+Pass `--week` for a weekly edition instead of a daily one: Monday to
+Friday of the week containing `--date` (or this week), in either mode.
+Sections aggregate the week, and a "Day by Day" ledger up front breaks
+it down per weekday.
+
+```sh
+the-daily-commit --author RogueAlg0 --week --out week.html
+```
+
+In author mode, `--week-url URL` adds a "This week in USER" link to the
+top of the daily edition, pointing at its weekly edition.
 
 ## Options
 

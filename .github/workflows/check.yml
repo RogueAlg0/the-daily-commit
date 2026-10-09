@@ -21,3 +21,8 @@ jobs:
         run: python3 generate.py RogueAlg0/the-daily-commit --date 01-01 --out /tmp/smoke.html
       - name: Smoke output has no unreplaced placeholders
         run: grep -Eq "{{[A-Z]+}}" /tmp/smoke.html && exit 1 || exit 0
+      - name: No em dashes or en dashes in source files
+        run: >
+          grep -rEn "—|–" --include="*.py" --include="*.html"
+          --include="*.md" --include="*.sh" --exclude-dir=site
+          --exclude-dir=.git . && exit 1 || exit 0

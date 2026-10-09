@@ -39,25 +39,14 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@v4
-      - name: Collect .debs from all releases
+      - name: Build the site
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p apt
-          for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
-            gh release download "$tag" -p 'the-daily-commit_*_all.deb' -D apt/ || true
-          done
-          ls apt/
-      - name: Build Packages index
-        run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq dpkg-dev
-          cd apt
-          dpkg-scanpackages --multiversion . /dev/null > Packages
-          gzip -9c Packages > Packages.gz
-      - name: Add install page
-        run: cp packaging/apt-index.html apt/index.html
+          bash packaging/build-site.sh
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: apt
+          path: site
       - uses: actions/deploy-pages@v4

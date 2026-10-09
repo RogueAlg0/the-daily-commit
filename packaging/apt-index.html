@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>the-daily-commit apt repository</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 40rem; margin: 3rem auto;
+         padding: 0 1rem; line-height: 1.5; color: #1c1a16; }
+  pre { background: #f5f1e6; border: 1px solid #8a8272; padding: 1rem;
+        overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>the-daily-commit apt repository</h1>
+<p>Install on Debian or Ubuntu:</p>
+<pre>echo "deb [trusted=yes] https://roguealg0.github.io/the-daily-commit/ ./" \
+  | sudo tee /etc/apt/sources.list.d/the-daily-commit.list
+sudo apt update &amp;&amp; sudo apt install the-daily-commit</pre>
+<p>The repository is unsigned; <code>trusted=yes</code> is honest about
+that. Suitable for a side project.</p>
+<p><a href="https://github.com/RogueAlg0/the-daily-commit">GitHub</a></p>
+</body>
+</html>

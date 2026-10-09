@@ -880,7 +880,8 @@ def article(item, style=""):
     ) % (cls, headline, byline_html, esc(str(item["year"])), body)
 
 
-def section(title, items, preview=5, lead=False, brief=False):
+def section(title, items, preview=5, lead=False, brief=False,
+            keep_order=False):
     """Render a section showing the first few articles.
 
     The rest hide behind a <details> expander: pure HTML, no JavaScript,
@@ -888,10 +889,13 @@ def section(title, items, preview=5, lead=False, brief=False):
 
     Lead=True makes the first item a big lead story spanning columns.
     Brief=True renders all items as compact one-liners.
+    Keep_order=True skips the default year/headline sort, for callers
+    like day_by_day() whose items are already in chronological order.
     """
     if not items:
         return ""
-    items = sorted(items, key=lambda i: (i["year"], i["headline"]))
+    if not keep_order:
+        items = sorted(items, key=lambda i: (i["year"], i["headline"]))
     shown, rest = items[:preview], items[preview:]
     parts = ["<section>", "<h2>%s</h2>" % esc(title)]
     for idx, item in enumerate(shown):
@@ -1877,7 +1881,7 @@ def day_by_day(pairs, week_days, span):
             "body": "; ".join(bits),
             "url": "",
         })
-    return section("Day by Day", items)
+    return section("Day by Day", items, keep_order=True)
 
 
 def anniversary_batches(items, current_year, span=""):

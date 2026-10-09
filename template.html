@@ -9,51 +9,59 @@
 <meta property="og:type" content="website">
 <meta name="twitter:card" content="summary">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,700;1,8..60,400&display=swap');
   :root {
-    --paper: #f5f1e6;
-    --ink: #1c1a16;
-    --faint: #6b655a;
-    --rule: #8a8272;
+    --paper: #f8f5ec;
+    --ink: #141210;
+    --faint: #5c564a;
+    --rule: #b8b0a0;
   }
   * { box-sizing: border-box; }
   body {
-    background: #d8d2c2;
+    background: var(--paper);
     color: var(--ink);
-    font-family: Georgia, "Times New Roman", Times, serif;
+    font-family: "Source Serif 4", Georgia, "Times New Roman", serif;
     margin: 0;
-    padding: 1.5rem 1rem;
-    line-height: 1.45;
+    padding: 0;
+    line-height: 1.5;
   }
   .page {
-    max-width: 960px;
+    max-width: 1100px;
     margin: 0 auto;
-    background: var(--paper);
-    border: 1px solid var(--rule);
-    box-shadow: 0 4px 24px rgba(0,0,0,0.25);
-    padding: 2rem 2.5rem 3rem;
+    padding: 1rem 2rem 3rem;
   }
   .masthead {
     text-align: center;
-    border-top: 4px double var(--ink);
-    border-bottom: 4px double var(--ink);
-    padding: 0.8rem 0 0.6rem;
-    margin-bottom: 0.4rem;
+    border-bottom: 3px double var(--ink);
+    padding: 1.2rem 0 0.8rem;
+    margin-bottom: 0.3rem;
   }
   .masthead .kicker {
     font-variant: small-caps;
-    letter-spacing: 0.35em;
-    font-size: 0.8rem;
+    letter-spacing: 0.4em;
+    font-size: 0.75rem;
     color: var(--faint);
+    margin-bottom: 0.3rem;
   }
   .masthead h1 {
-    font-size: 3rem;
-    margin: 0.2rem 0;
-    letter-spacing: 0.02em;
+    font-family: "Playfair Display", Georgia, serif;
+    font-weight: 900;
+    font-size: 4.2rem;
+    margin: 0;
+    letter-spacing: -0.02em;
+    line-height: 1;
   }
   .masthead .repo {
     font-variant: small-caps;
-    letter-spacing: 0.2em;
-    font-size: 1rem;
+    letter-spacing: 0.25em;
+    font-size: 0.95rem;
+    margin-top: 0.4rem;
+    color: var(--faint);
+  }
+  .masthead .repo a {
+    color: var(--faint);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--faint);
   }
   .dateline {
     display: flex;
@@ -61,36 +69,43 @@
     flex-wrap: wrap;
     gap: 0.2rem 1rem;
     font-variant: small-caps;
-    font-size: 0.85rem;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
     color: var(--faint);
-    border-bottom: 1px solid var(--rule);
-    padding-bottom: 0.4rem;
-    margin-bottom: 1.2rem;
+    border-bottom: 1px solid var(--ink);
+    padding: 0.35rem 0;
+    margin-bottom: 1rem;
   }
   .lede {
-    font-size: 1.15rem;
+    font-size: 1.1rem;
+    line-height: 1.6;
     column-span: all;
     border-bottom: 1px solid var(--rule);
-    padding-bottom: 1rem;
-    margin-bottom: 1.2rem;
-    overflow-wrap: break-word;
+    padding-bottom: 0.9rem;
+    margin-bottom: 1rem;
+    text-align: justify;
   }
   .lede::first-letter {
-    font-size: 2.6em;
+    font-family: "Playfair Display", Georgia, serif;
+    font-size: 3.2em;
     float: left;
-    line-height: 0.85;
-    padding-right: 0.12em;
-    font-weight: bold;
+    line-height: 0.8;
+    padding-right: 0.1em;
+    padding-top: 0.05em;
+    font-weight: 900;
   }
   .columns {
-    column-count: 2;
-    column-gap: 2.5rem;
+    column-count: 3;
+    column-gap: 2rem;
     column-rule: 1px solid var(--rule);
+  }
+  @media (max-width: 900px) {
+    .columns { column-count: 2; }
   }
   @media (max-width: 640px) {
     .columns { column-count: 1; }
-    .masthead h1 { font-size: 2rem; }
-    .page { padding: 1.2rem 1.2rem 2rem; }
+    .masthead h1 { font-size: 2.6rem; }
+    .page { padding: 0.8rem 1rem 2rem; }
   }
   section { margin-bottom: 1.4rem; }
   section h2 {
@@ -191,7 +206,7 @@
   <header class="masthead">
     <div class="kicker">{{KICKER}}</div>
     <h1>The Daily Commit</h1>
-    <div class="repo">{{TITLE}}</div>
+    <div class="repo">{{TITLE_LINK}}</div>
   </header>
   <div class="dateline">
     <span>{{DATELINE}}</span>

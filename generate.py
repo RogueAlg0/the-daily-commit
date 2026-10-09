@@ -1071,6 +1071,41 @@ def overheard_box(quips):
     return "\n".join(parts)
 
 
+def new_voices_box(voices, seed=""):
+    """Post-it notes for first-time contributors.
+
+    Not a formal box. Little yellow stickies, slightly rotated,
+    like someone stuck them on the newspaper. Each gets a random
+    tilt and a short, varied message (seeded for consistency).
+    """
+    if not voices:
+        return ""
+    import random
+    rng = random.Random(seed)
+    # Short, punchy, like real Post-its. Not sentences.
+    messages = [
+        "hi %s!",
+        "hey %s!",
+        "%s is new!",
+        "welcome %s",
+        "say hi to %s",
+        "fresh: %s",
+        "%s joined!",
+        "new kid: %s",
+    ]
+    parts = ['<div class="postit-stack">']
+    for v in voices[:5]:
+        login = v["byline"]
+        url = v.get("author_url") or ("https://github.com/" + login)
+        tilt = rng.uniform(-3, 3)
+        msg = rng.choice(messages) % ('<a href="%s">%s</a>' % (esc(url), esc(login)))
+        parts.append(
+            '<div class="postit" style="transform: rotate(%.1fdeg)">%s</div>'
+            % (tilt, msg))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
 def curate_drama(candidates_by_type, limit=5, seed=""):
     """A newspaper editor, not a firehose.
 
@@ -1263,6 +1298,40 @@ def find_merges(commits):
             "url": item["url"],
         })
     return found
+
+
+def find_new_voices(commits):
+    """First-time contributors appearing in the paper.
+
+    An author whose earliest commit in the fetched history is from
+    the most recent year is a new voice: they weren't in the paper
+    in prior years. Celebrate them.
+    """
+    if not commits:
+        return []
+    by_author = {}
+    for item in commits:
+        login = item.get("login") or item.get("byline", "")
+        if not login or login == "unknown":
+            continue
+        by_author.setdefault(login, []).append(item)
+    max_year = max(i["year"] for i in commits)
+    voices = []
+    for login, items in by_author.items():
+        earliest = min(i["year"] for i in items)
+        if earliest == max_year and len(items) <= 3:
+            # First appearance, and not too many (not a regular).
+            first = min(items, key=lambda i: i["year"])
+            voices.append({
+                "year": first["year"],
+                "headline": "Welcome, %s!" % login,
+                "byline": login,
+                "body": "First appearance in the paper with: %s" %
+                        first["headline"][:60],
+                "url": first["url"],
+                "author_url": profile_url(login),
+            })
+    return voices
 
 
 def build_docket(items, ticket_url_base=""):
@@ -1547,8 +1616,11 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url=""):
     # Quips go in the Overheard sidebar, not as full articles.
     serious = [d for d in drama if d.get("quip_type") != "quip"]
     quip_items = [d for d in drama if d.get("quip_type") == "quip"]
+    voices = find_new_voices(data["commits"])
+    seed = "%s-%s" % (mds[0] if mds else "", span)
     sections = [
         pullquote(quote),
+        new_voices_box(voices, seed=seed),
         overheard_box(quip_items),
         section("Scandals & Corrections", serious),
         build_docket(docket_items, ticket_url),

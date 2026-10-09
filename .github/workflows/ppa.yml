@@ -1,0 +1,38 @@
+name: ppa
+
+on:
+  push:
+    tags:
+      - "tdc*"
+  workflow_dispatch:
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq debhelper dput-ng devscripts
+      - name: Import the PPA signing key
+        env:
+          PPA_GPG_PRIVATE_KEY: ${{ secrets.PPA_GPG_PRIVATE_KEY }}
+        run: |
+          test -n "$PPA_GPG_PRIVATE_KEY" || \
+            { echo "PPA_GPG_PRIVATE_KEY secret is not set"; exit 1; }
+          printf '%s' "$PPA_GPG_PRIVATE_KEY" | gpg --batch --import
+          gpg --list-keys 1F83F4C98D7FD49FFE921FB92DE8D6BC877C651D
+      - name: Build the source package
+        run: |
+          VER="${GITHUB_REF_NAME#tdc}"
+          [ -n "$VER" ] || VER="0.1.0"
+          dch --newversion "${VER}-1~ppa1" --distribution noble \
+            --force-distribution "PPA build."
+          dpkg-buildpackage -S -sa \
+            -k1F83F4C98D7FD49FFE921FB92DE8D6BC877C651D
+      - name: Upload to the PPA
+        run: |
+          dput ppa:roguealg0/daily-commit ../*.changes

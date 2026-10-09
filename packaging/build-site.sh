@@ -39,6 +39,7 @@ printf '{"schemaVersion": 1, "label": "today'"'"'s paper", "message": "%s", "col
   "$TODAY_HUMAN" > "$SITE/daily/badge.json"
 cp packaging/daily-index.html "$SITE/daily/index.html"
 cp packaging/root-index.html "$SITE/index.html"
+cp packaging/live.html "$SITE/live.html"
 
 # the author's own paper, same three dates, plus a profile stats card
 ADATES=""

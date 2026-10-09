@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Today - The Daily Commit</title>
+<style>
+  body { font-family: Georgia, serif; max-width: 720px; margin: 0 auto;
+         padding: 1em; background: #f5f1e6; color: #1c1a16; }
+  h1 { text-align: center; letter-spacing: 3px; font-size: 1.4em;
+       border-bottom: 3px double #1c1a16; padding-bottom: 0.3em; }
+  .dateline { text-align: center; color: #6b655a; font-style: italic; }
+  h2 { font-size: 1.1em; border-bottom: 1px solid #8a8272; margin-top: 1.5em; }
+  article { margin: 0.8em 0; }
+  article h3 { font-size: 1em; margin: 0; }
+  article h3 a { color: #1c1a16; }
+  .byline { font-size: 0.85em; color: #6b655a; }
+  .body { font-size: 0.9em; color: #3a372f; margin: 0.2em 0; }
+  .quiet { text-align: center; font-style: italic; color: #6b655a;
+           margin: 2em 0; }
+  .error { background: #fff3cd; border: 1px solid #e0c36a; padding: 1em;
+           margin: 1em 0; }
+  .loading { text-align: center; font-style: italic; color: #6b655a; }
+  .repo-picker { text-align: center; margin: 1em 0; font-size: 0.9em; }
+  .repo-picker input { font-family: inherit; padding: 0.3em; width: 220px;
+                       border: 1px solid #8a8272; background: #fffdf5; }
+  .repo-picker button { font-family: inherit; padding: 0.3em 0.8em;
+                        background: #1c1a16; color: #f5f1e6; border: none;
+                        cursor: pointer; }
+  footer { margin-top: 2em; text-align: center; font-size: 0.8em;
+           color: #8a8272; border-top: 1px solid #8a8272; padding-top: 1em; }
+  footer a { color: #6b655a; }
+</style>
+</head>
+<body>
+<h1>THE DAILY COMMIT</h1>
+<p class="dateline" id="dateline">Live edition</p>
+
+<div class="repo-picker">
+  <input id="repo-input" placeholder="owner/repo" aria-label="Repository">
+  <button id="repo-go">Read the paper</button></div>
+
+<div id="content"><p class="loading">Fetching today's edition…</p></div>
+
+<footer>
+  <span id="rateinfo"></span><br>
+  <a href="./">Historical editions</a> · Live data from the GitHub API,
+  rendered in your browser. Nothing is stored.
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var API = "https://api.github.com";
+
+  function params() {
+    var m = /[?&]repo=([^&]+)/.exec(location.search);
+    return m ? decodeURIComponent(m[1]) : "RogueAlg0/the-daily-commit";
+  }
+  var repo = params();
+  document.getElementById("repo-input").value = repo;
+  document.getElementById("repo-go").onclick = function () {
+    var r = document.getElementById("repo-input").value.trim();
+    if (r) location.search = "?repo=" + encodeURIComponent(r);
+  };
+
+
+  // Viewer's local day as a UTC range for the API.
+  var now = new Date();
+  var start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  var since = start.toISOString(), until = end.toISOString();
+  var todayStr = start.toISOString().slice(0, 10);
+  document.getElementById("dateline").textContent =
+    "Live edition for " + start.toLocaleDateString(undefined,
+      { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function firstLine(s) {
+    s = String(s || "").trim().split("\n")[0].trim();
+    return s.length > 140 ? s.slice(0, 137) + "..." : s;
+  }
+  function onDay(iso) {
+    return typeof iso === "string" && iso.slice(0, 10) === todayStr;
+  }
+
+  function get(path) {
+    return fetch(API + path, {
+      headers: { "Accept": "application/vnd.github+json" }
+    }).then(function (r) {
+      var remaining = r.headers.get("x-ratelimit-remaining");
+      var reset = r.headers.get("x-ratelimit-reset");
+      if (remaining !== null) {
+        var msg = "GitHub API calls remaining this hour: " + remaining;
+        if (reset && remaining === "0") {
+          var wait = Math.max(0, Math.round(
+            (+reset * 1000 - Date.now()) / 60000));
+          msg += " (resets in ~" + wait + " min)";
+        }
+        document.getElementById("rateinfo").textContent = msg;
+      }
+      if (r.status === 403 || r.status === 429) {
+        throw new Error("rate-limited");
+      }
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    });
+  }
+
+  function article(headline, byline, body, url) {
+    var h = url
+      ? '<h3><a href="' + esc(url) + '">' + esc(headline) + "</a></h3>"
+      : "<h3>" + esc(headline) + "</h3>";
+    return "<article>" + h +
+      '<div class="byline">' + esc(byline) + "</div>" +
+      (body ? '<p class="body">' + esc(body) + "</p>" : "") +
+      "</article>";
+  }
+  function section(title, items) {
+    if (!items.length) return "";
+    return "<h2>" + esc(title) + "</h2>" + items.join("\n");
+  }
+
+  var enc = encodeURIComponent(repo);
+  Promise.all([
+    get("/repos/" + enc + "/commits?since=" + since +
+        "&until=" + until + "&per_page=100").catch(function () { return []; }),
+    get("/repos/" + enc + "/issues?state=all&per_page=100" +
+        "&sort=updated&direction=desc").catch(function () { return []; }),
+    get("/repos/" + enc + "/pulls?state=closed&per_page=100" +
+        "&sort=updated&direction=desc").catch(function () { return []; }),
+    get("/repos/" + enc + "/releases?per_page=100").catch(function () { return []; })
+  ]).then(function (res) {
+    var commits = res[0], issues = res[1], prs = res[2], releases = res[3];
+    var out = [];
+
+    var commitItems = (Array.isArray(commits) ? commits : [])
+      .filter(function (c) {
+        var d = ((c.commit || {}).committer || {}).date || "";
+        return onDay(d);
+      })
+      .map(function (c) {
+        var info = c.commit || {};
+        return article(
+          firstLine(info.message) || "(untitled)",
+          ((info.author || {}).name || "unknown"),
+          (c.sha || "").slice(0, 7),
+          c.html_url);
+      });
+    out.push(section("From the Commit Ledger", commitItems));
+
+    var opened = [], closed = [];
+    (Array.isArray(issues) ? issues : []).forEach(function (i) {
+      if (i.pull_request) return;
+      var byline = ((i.user || {}).login || "unknown");
+      if (onDay(i.created_at)) {
+        opened.push(article("#" + i.number + " " + firstLine(i.title),
+          byline, firstLine(i.body), i.html_url));
+      }
+      if (i.closed_at && onDay(i.closed_at)) {
+        closed.push(article("#" + i.number + " " + firstLine(i.title),
+          byline, firstLine(i.body), i.html_url));
+      }
+    });
+    out.push(section("Issues Opened", opened));
+    out.push(section("Issues Closed", closed));
+
+    var merged = (Array.isArray(prs) ? prs : [])
+      .filter(function (p) { return p.merged_at && onDay(p.merged_at); })
+      .map(function (p) {
+        return article("#" + p.number + " " + firstLine(p.title),
+          ((p.user || {}).login || "unknown"),
+          firstLine(p.body), p.html_url);
+      });
+    out.push(section("Pull Requests Merged", merged));
+
+    var rels = (Array.isArray(releases) ? releases : [])
+      .filter(function (r) {
+        return onDay(r.published_at || r.created_at);
+      })
+      .map(function (r) {
+        return article(firstLine(r.name || r.tag_name),
+          ((r.author || {}).login || "unknown"),
+          firstLine(r.body), r.html_url);
+      });
+    out.push(section("Releases", rels));
+
+    var html = out.join("\n").trim();
+    document.getElementById("content").innerHTML = html ||
+      '<p class="quiet">A quiet day in the archives. Nothing happened ' +
+      "in " + esc(repo) + " today.</p>";
+  }).catch(function (err) {
+    var msg = err.message === "rate-limited"
+      ? "GitHub's hourly API allowance ran out for your network. " +
+        "Wait a few minutes and reload."
+      : "Could not load " + repo + " (" + esc(err.message) + "). " +
+        "Check the name and try again.";
+    document.getElementById("content").innerHTML =
+      '<div class="error">' + msg + "</div>";
+  });
+})();
+</script>
+</body>
+</html>

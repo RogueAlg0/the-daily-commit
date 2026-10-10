@@ -79,7 +79,7 @@ import urllib.parse
 import urllib.request
 
 API = "https://api.github.com"
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 MAX_ISSUE_PAGES = 10
 MAX_PULL_PAGES = 5
 MAX_RELEASE_PAGES = 3

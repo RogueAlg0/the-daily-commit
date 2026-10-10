@@ -702,8 +702,38 @@ class GitHubAPIClient(APIClient):
     # subclasses will override with their own endpoints and pagination.
 
 
+def _strip_inline_markdown(line):
+    """Drop inline markdown syntax so the line reads as plain text.
+
+    Headings, blockquotes, list and task-list markers, image syntax,
+    link targets, backticks, and bold/italic markers are removed; the
+    wrapped words stay. A line that is nothing but markers (a bare
+    "---" or "***") comes back empty. Deterministic, so editions
+    re-render byte-identically.
+    """
+    import re
+    if not line:
+        return ""
+    line = re.sub(r"<!--.*?-->", "", line)            # HTML comments
+    line = re.sub(r"!\[[^\]]*\]\([^)]*\)", "", line)  # images
+    line = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", line)  # links keep text
+    line = line.strip()
+    # Leading block markers: headings, blockquotes, lists, then tasks.
+    line = re.sub(r"^(?:#{1,6}\s+|>\s*|[-*+]\s+|\d{1,3}[.)]\s+)+", "", line)
+    line = re.sub(r"^(?:\[[ xX]\]\s+)+", "", line)
+    line = line.replace("`", "")
+    line = line.replace("**", "").replace("__", "")
+    line = re.sub(r"(?<!\S)\*(\S[^*]*?\S|\S)\*(?!\S)", r"\1", line)
+    line = re.sub(r"(?<!\S)_(\S[^_]*?\S|\S)_(?!\S)", r"\1", line)
+    line = line.strip()
+    if line and not re.search(r"[A-Za-z0-9]", line):
+        return ""
+    return line
+
+
 def first_line(text):
     line = (text or "").strip().split("\n")[0].strip()
+    line = _strip_inline_markdown(line)
     return line if len(line) <= 140 else line[:137] + "..."
 
 
@@ -1831,7 +1861,8 @@ def section(title, items, preview=5, lead=False, brief=False,
     if not items:
         return ""
     if not keep_order:
-        items = sorted(items, key=lambda i: (i["year"], i["headline"]))
+        # Newest year first: the freshest news leads each section.
+        items = sorted(items, key=lambda i: (-i["year"], i["headline"]))
     shown, rest = items[:preview], items[preview:]
     parts = ["<section>", "<h2>%s</h2>" % esc(title)]
     for idx, item in enumerate(shown):
@@ -2094,15 +2125,17 @@ def quip_text(item):
 
 
 def curate_drama(candidates_by_type, limit=5, seed="", memory=None,
-                 within=6, current_key=""):
+                 within=6, current_key="", exclude=()):
     """A newspaper editor, not a firehose.
 
     Takes dict of {type_name: [items]}, picks up to `limit` total,
     spreading picks across types for variety. Seeded for consistency:
     the same edition shows the same selection. Random, but respectful.
 
-    When `memory` (an EditionMemory) is given, quips seen in recent
-    editions sort after fresh ones, so repeats fade without ever
+    `exclude` holds quip texts that must not be picked (the winning
+    Quote of the Day), so one edition never prints its headline joke
+    twice. When `memory` (an EditionMemory) is given, quips seen in
+    recent editions sort after fresh ones, so repeats fade without ever
     forcing an empty pick: if every candidate was seen, the least
     stale ones still run. `current_key` excludes the edition being
     rendered, so re-renders stay byte-identical.
@@ -2113,7 +2146,8 @@ def curate_drama(candidates_by_type, limit=5, seed="", memory=None,
     types = list(candidates_by_type.keys())
     rng.shuffle(types)
     picked = []
-    pools = {t: list(items) for t, items in candidates_by_type.items()}
+    pools = {t: [item for item in items if quip_text(item) not in exclude]
+             for t, items in candidates_by_type.items()}
     for t in pools:
         rng.shuffle(pools[t])
         if memory is not None:
@@ -2476,11 +2510,32 @@ def repo_weather(commits, merges, issues):
     return ", ".join(parts) + "."
 
 
+def deal(rng, pool, n):
+    """Deal n items from a sentence pool without replacement.
+
+    Seeded-shuffles a copy of the pool and returns the first n items,
+    reshuffling only when n exceeds the pool length (recycle, never
+    error). A shuffled deck per edition keeps editions byte-identical
+    across re-renders while no two items on one page share a sentence.
+    """
+    deck = []
+    out = []
+    while len(out) < n:
+        if not deck:
+            deck = list(pool)
+            rng.shuffle(deck)
+        out.append(deck.pop())
+    return out
+
+
 def marriage_announcements(merges, seed=""):
     """Merged branches as wedding announcements.
 
-    Each gets a different ceremony variant, picked with the edition
-    seed. Hotfix branches get the rushed chapel line.
+    Each gets a different ceremony variant, dealt without replacement
+    from a seeded deck. Hotfix branches take the rushed chapel line
+    first, so it can never collide with a dealt one. The parseable
+    pool is filtered and shuffled before the cap, so an unparseable
+    message never eats a slot.
     """
     if not merges:
         return []
@@ -2491,10 +2546,10 @@ def marriage_announcements(merges, seed=""):
         "Vows were exchanged at the registry office as '%s' wed main.",
         "In a 2am elopement, '%s' ran away with main. No one was surprised.",
         "Before the CI congregation, '%s' renewed its vows with main.",
-        "In a rushed chapel ceremony between rebases, '%s' married main.",
     ]
-    announcements = []
-    for m in merges[:5]:
+    rushed = "In a rushed chapel ceremony between rebases, '%s' married main."
+    parsed = []
+    for m in merges:
         msg = m["headline"]
         match = re.search(r"from \S+/(\S+)", msg)
         if match:
@@ -2504,11 +2559,20 @@ def marriage_announcements(merges, seed=""):
             if not match:
                 continue
             branch = match.group(1)
+        parsed.append((branch, m))
+    # Fair selection: shuffle the parseable pool before the cap.
+    pick_rng = random.Random(seed + "-marriages-pick")
+    pick_rng.shuffle(parsed)
+    picked = parsed[:5]
+    normal = [b for b, _ in picked if "hotfix" not in b.lower()]
+    dealt = iter(deal(rng, ceremonies, len(normal)))
+    announcements = []
+    for branch, m in picked:
         # Hotfix branches get the rushed chapel
         if "hotfix" in branch.lower():
-            body = ceremonies[4] % branch
+            body = rushed % branch
         else:
-            body = rng.choice(ceremonies) % branch
+            body = next(dealt) % branch
         announcements.append({
             "headline": "%s weds main" % branch,
             "byline": m["byline"],
@@ -2548,21 +2612,29 @@ def letters_to_editor(commits):
     return letters
 
 
-def missed_connections(issues_opened, issues_closed):
-    """Opened-but-unclosed issues as missed connections."""
+def missed_connections(issues_opened, issues_closed, seed=""):
+    """Opened-but-unclosed issues as missed connections.
+
+    The still-open pool is filtered first, then seeded-shuffled and
+    capped, so the box fills from the whole day's open issues instead
+    of the first five in scan order.
+    """
+    import random
     # Issues that were opened but never closed (still open)
     # For simplicity: opened issues that don't appear in closed
     closed_numbers = {i.get("number") for i in issues_closed if i.get("number")}
+    pool = [i for i in issues_opened if i.get("number") not in closed_numbers]
+    rng = random.Random(seed + "-missed-pick")
+    rng.shuffle(pool)
     missed = []
-    for issue in issues_opened[:5]:
-        if issue.get("number") not in closed_numbers:
-            missed.append({
-                "headline": "Missed Connection: #%s" % issue.get("number"),
-                "byline": issue["byline"],
-                "body": "You: %s. Me: still waiting. Let's try again?" %
-                        issue["headline"][:60],
-                "url": issue["url"],
-            })
+    for issue in pool[:5]:
+        missed.append({
+            "headline": "Missed Connection: #%s" % issue.get("number"),
+            "byline": issue["byline"],
+            "body": "You: %s. Me: still waiting. Let's try again?" %
+                    issue["headline"][:60],
+            "url": issue["url"],
+        })
     return missed
 
 
@@ -2838,14 +2910,18 @@ def day_by_day(pairs, week_days, span):
     return section("Day by Day", items, keep_order=True)
 
 
-def anniversary_batches(items, current_year, span=""):
+def anniversary_batches(items, current_year, span="", seed=""):
     """Group items by anniversary: 1, 5, 10, 15, 20, 25 years ago.
 
     For week mode: "5 Years Ago This Week" batches.
     Only significant anniversaries get their own section.
+    Each milestone pool is seed-shuffled before the 10-cap, so a busy
+    anniversary reads as ten items drawn fairly from the day instead
+    of the top of a fetch-order pile.
     """
     if not items:
         return ""
+    import random
     # Milestone anniversaries
     milestones = {1, 5, 10, 15, 20, 25}
     by_anniversary = {}
@@ -2857,11 +2933,12 @@ def anniversary_batches(items, current_year, span=""):
         return ""
     parts = []
     for years_ago in sorted(by_anniversary.keys()):
-        batch = by_anniversary[years_ago]
+        pool = list(by_anniversary[years_ago])
+        random.Random(seed + "-anniv-%d" % years_ago).shuffle(pool)
         label = "%d Year%s Ago" % (years_ago, "s" if years_ago != 1 else "")
         if span == "week":
             label += " This Week"
-        parts.append(section(label, batch[:10]))  # Cap at 10 per anniversary
+        parts.append(section(label, pool[:10]))  # Cap at 10 per anniversary
     return "\n".join(parts)
 
 
@@ -2976,15 +3053,16 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(data["commits"])
     candidates["revert"] = find_reverts(data["commits"])
+    quote = find_quote(data["commits"], data["comments"])
     quips = curate_drama(candidates, limit=5, seed=seed, memory=memory,
-                         current_key=edition_key)
+                         current_key=edition_key,
+                         exclude={quote["text"]} if quote else ())
     for q in quips:
         q["quip_type"] = "quip"
     drama = (quips + hottest_threads(data["opened"], data["closed"]))
     counts["drama"] = len(drama)
     merges = find_merges(data["commits"])
     counts["merges"] = len(merges)
-    quote = find_quote(data["commits"], data["comments"])
     # Tag items for the docket.
     for item in data["commits"]:
         item["kind"] = "commit"
@@ -3005,7 +3083,7 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
     weather_text = repo_weather(data["commits"], merges, data["opened"])
     marriages = marriage_announcements(merges, seed=seed)
     letters = letters_to_editor(data["commits"])
-    missed = missed_connections(data["opened"], data["closed"])
+    missed = missed_connections(data["opened"], data["closed"], seed=seed)
     ads = classified_ads(seed=seed, md=mds[0] if mds else "")
     sections = [
         pullquote(quote),
@@ -3045,7 +3123,8 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
         current_year = datetime.date.today().year
         all_items = (data["commits"] + data["opened"] + data["closed"] +
                      data["merged"] + data["releases"])
-        anniv = anniversary_batches(all_items, current_year, span="week")
+        anniv = anniversary_batches(all_items, current_year, span="week",
+                                    seed=seed)
         if anniv:
             sections.insert(2, anniv)
     sections = scatter_charms(sections, charms, seed)
@@ -3111,15 +3190,16 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
     seed = "%s-%s" % (mds[0] if mds else "", span)
     candidates = find_quips(commits)
     candidates["revert"] = find_reverts(commits)
+    quote = find_quote(commits, comments)
     quips = curate_drama(candidates, limit=5, seed=seed, memory=memory,
-                         current_key=edition_key)
+                         current_key=edition_key,
+                         exclude={quote["text"]} if quote else ())
     for q in quips:
         q["quip_type"] = "quip"
     drama = (quips + hottest_threads(opened + prs_opened, closed))
     counts["drama"] = len(drama)
     merges = find_merges(commits)
     counts["merges"] = len(merges)
-    quote = find_quote(commits, comments)
     for item in commits:
         item["kind"] = "commit"
     for item in opened + closed:
@@ -3137,7 +3217,7 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
     weather_text = repo_weather(commits, merges, opened)
     marriages = marriage_announcements(merges, seed=seed)
     letters = letters_to_editor(commits)
-    missed = missed_connections(opened, closed)
+    missed = missed_connections(opened, closed, seed=seed)
     ads = classified_ads(seed=seed, md=mds[0] if mds else "")
     sections = [
         pullquote(quote),

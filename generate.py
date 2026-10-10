@@ -70,6 +70,7 @@ import os
 import random
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -923,6 +924,194 @@ def fetch_comments(repo, mds):
         if len(picked) >= 5:
             break
     return picked
+
+
+def git_run(path, *args):
+    """Run git in path, return stdout. Raises RuntimeError on failure."""
+    proc = subprocess.run(["git", "-C", path] + list(args),
+                          capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError("git %s failed in %s: %s"
+                           % (" ".join(args), path,
+                              proc.stderr.strip().split("\n")[0]))
+    return proc.stdout
+
+
+def fetch_local_commits(path, mds):
+    """Commits in the local git history on the month-days. Offline.
+
+    Mirrors fetch_commits item for item, minus the forge links: no URL,
+    no login, no profile link.
+    """
+    mds = set(mds)
+    fmt = "%x1f".join(["%H", "%cI", "%an", "%s"])
+    found = []
+    for line in git_run(path, "log", "--all", "--format=" + fmt).splitlines():
+        parts = line.split("\x1f")
+        if len(parts) != 4:
+            continue
+        sha, stamp, author, subject = parts
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        found.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": first_line(subject),
+            "byline": author or "unknown",
+            "body": sha[:7],
+            "url": "",
+            "login": "",
+            "author_url": "",
+        })
+    return found
+
+
+def fetch_local_tags(path, mds):
+    """Local tags pointing at commits on the month-days. Offline.
+
+    Two git calls: one to list tags with their target commits, one to
+    date every target in a batch.
+    """
+    mds = set(mds)
+    # for-each-ref --format does not interpret %x escapes, so the
+    # fields are joined with a literal tab: refnames cannot contain
+    # control characters.
+    refs = git_run(path, "for-each-ref",
+                   "--format=%(refname:short)\t%(*objectname)\t%(objectname)",
+                   "refs/tags").splitlines()
+    specs = []
+    for line in refs:
+        parts = line.split("\t")
+        if len(parts) != 3:
+            continue
+        name, deref, obj = parts
+        sha = deref or obj
+        if name and sha:
+            specs.append((name, sha))
+    if not specs:
+        return []
+    fmt = "%x1f".join(["%H", "%cI", "%an", "%s"])
+    dated = {}
+    for line in git_run(path, "log", "--no-walk", "--format=" + fmt,
+                        *[sha for _, sha in specs]).splitlines():
+        parts = line.split("\x1f")
+        if len(parts) == 4:
+            dated[parts[0]] = parts[1:]
+    found = []
+    for name, sha in specs:
+        stamp, author, subject = dated.get(sha, ("", "", ""))
+        day = month_day(stamp)
+        if day not in mds:
+            continue
+        found.append({
+            "year": year_of(stamp),
+            "day": day,
+            "headline": name,
+            "byline": author or "unknown",
+            "body": first_line(subject),
+            "url": "",
+        })
+    return found
+
+
+HOOK_MARKER = "the-daily-commit post-commit hook"
+
+
+def hook_block(tdc_py, out_path):
+    """The managed post-commit block. Regenerates, then prints the link."""
+    return (
+        "# BEGIN %s\n" % HOOK_MARKER +
+        "# Managed by: tdc --install-hook. Remove with tdc --uninstall-hook.\n" +
+        "TDC_PY=%s\n" % shlex.quote(tdc_py) +
+        "TDC_OUT=%s\n" % shlex.quote(out_path) +
+        "if [ -f \"$TDC_PY\" ]; then\n" +
+        "  mkdir -p \"$(dirname \"$TDC_OUT\")\"\n" +
+        "  if python3 \"$TDC_PY\" --local . --out \"$TDC_OUT\" >/dev/null 2>&1; then\n" +
+        "    echo \"Fresh paper pressed: file://$TDC_OUT\"\n" +
+        "  fi\n" +
+        "fi\n" +
+        "# END %s\n" % HOOK_MARKER
+    )
+
+
+def hook_paths(path):
+    """Absolute git dir and post-commit hook path for the repo at path."""
+    git_dir = git_run(path, "rev-parse", "--git-dir").strip()
+    if not os.path.isabs(git_dir):
+        git_dir = os.path.join(os.path.abspath(path), git_dir)
+    hooks_dir = os.path.join(git_dir, "hooks")
+    return hooks_dir, os.path.join(hooks_dir, "post-commit")
+
+
+def install_hook(path):
+    """Install the opt-in post-commit hook. Never overwrites by hand.
+
+    When a post-commit hook already exists and is not ours, print the
+    block and let the user merge it in by hand.
+    """
+    try:
+        hooks_dir, hook_path = hook_paths(path)
+    except RuntimeError as exc:
+        print("Not a git repository: %s" % exc)
+        return
+    os.makedirs(hooks_dir, exist_ok=True)
+    label = os.path.basename(os.path.abspath(path)) or "repo"
+    out_path = os.path.expanduser(
+        os.path.join("~", ".tdc", label, "today.html"))
+    block = hook_block(os.path.abspath(__file__), out_path)
+    if os.path.exists(hook_path):
+        with open(hook_path, encoding="utf-8") as handle:
+            existing = handle.read()
+        if HOOK_MARKER not in existing:
+            print("A post-commit hook already lives at %s." % hook_path)
+            print("tdc will not overwrite it. Merge this block by hand:")
+            print()
+            print(block)
+            return
+        start = existing.index("# BEGIN " + HOOK_MARKER)
+        end = existing.index("# END " + HOOK_MARKER) + len("# END " + HOOK_MARKER)
+        tail = existing[end:].lstrip("\n")
+        new = existing[:start] + block
+        if tail.strip():
+            new += "\n" + tail
+        action = "refreshed"
+    else:
+        new = "#!/bin/sh\n" + block
+        action = "installed"
+    with open(hook_path, "w", encoding="utf-8") as handle:
+        handle.write(new)
+    os.chmod(hook_path, 0o755)
+    print("Hook %s: %s" % (action, hook_path))
+    print("Every commit now presses a fresh paper to file://%s" % out_path)
+
+
+def uninstall_hook(path):
+    """Remove the managed post-commit block. Leaves other hooks alone."""
+    try:
+        _, hook_path = hook_paths(path)
+    except RuntimeError as exc:
+        print("Not a git repository: %s" % exc)
+        return
+    if not os.path.exists(hook_path):
+        print("No post-commit hook to remove.")
+        return
+    with open(hook_path, encoding="utf-8") as handle:
+        existing = handle.read()
+    if HOOK_MARKER not in existing:
+        print("The hook at %s is not managed by tdc. Left alone."
+              % hook_path)
+        return
+    start = existing.index("# BEGIN " + HOOK_MARKER)
+    end = existing.index("# END " + HOOK_MARKER) + len("# END " + HOOK_MARKER)
+    rest = (existing[:start] + existing[end:]).strip()
+    if not rest or rest == "#!/bin/sh":
+        os.remove(hook_path)
+    else:
+        with open(hook_path, "w", encoding="utf-8") as handle:
+            handle.write(existing[:start].rstrip("\n") + "\n"
+                         + existing[end:].lstrip("\n"))
+    print("Hook removed from %s." % hook_path)
 
 
 _repo_private_cache = {}
@@ -3040,11 +3229,28 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
                        {r["tag"] for r in repo_releases if r["tag"]}), repo))
         if not no_comments:
             data["comments"].extend(tag_repo(fetch_comments(repo, mds), repo))
-    if len(repos) > 1:
+    single = len(repos) == 1
+    title = repos[0] if single else ", ".join(repos)
+    label = repos[0] if single else "%d repositories" % len(repos)
+    if not single:
         for item in (data["commits"] + data["opened"] + data["closed"]
                      + data["merged"] + data["releases"] + data["tags"]
                      + data["comments"]):
             item["byline"] = "%s · %s" % (item["byline"], item["repo"])
+    return assemble_edition(data, title, label, created, private, mds,
+                            week_days, ticket_url, memory, edition_key,
+                            subject={"repos": repos})
+
+
+def assemble_edition(data, title, label, created, private, mds, week_days,
+                     ticket_url, memory, edition_key, record_line=None,
+                     subject=None):
+    """Shared edition assembly for API, local, and multi-repo gathers.
+
+    Everything downstream of the fetch step: curation, charm sections,
+    the docket, and the final edition dict.
+    """
+    current_year = dt.datetime.now().year
     years = list(range(min(created), current_year + 1))[-MAX_YEARS:]
     span = "%d-%d" % (years[0], years[-1]) if len(years) > 1 else str(years[0])
     counts = {key: len(items) for key, items in data.items()}
@@ -3129,7 +3335,6 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
             sections.insert(2, anniv)
     sections = scatter_charms(sections, charms, seed)
     body = "\n".join(sections)
-    single = len(repos) == 1
     if memory is not None and edition_key:
         memory.record(
             edition_key,
@@ -3140,15 +3345,41 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
             lead_headline=(quote or {}).get("text", ""),
         )
     return {
-        "title": repos[0] if single else ", ".join(repos),
-        "label": repos[0] if single else "%d repositories" % len(repos),
+        "title": title,
+        "label": label,
         "years": years,
         "counts": counts,
         "body": body,
-        "record": ("Compiled from the private record" if private
-                   else "Compiled from the public record"),
-        "subject": {"repos": repos},
+        "record": (record_line
+                   or ("Compiled from the private record" if private
+                       else "Compiled from the public record")),
+        "subject": (subject if subject is not None
+                    else {"repos": [label]}),
     }
+
+
+def gather_local(path, mds, no_comments, week_days=(), ticket_url="",
+                 memory=None, edition_key=""):
+    """Edition data from a local git checkout. Offline, no API calls.
+
+    Issues, pull requests, releases, and comments need a forge API,
+    so the local edition covers commits and tags. Everything
+    downstream of the fetch step is identical.
+    """
+    current_year = dt.datetime.now().year
+    abspath = os.path.abspath(path)
+    label = os.path.basename(abspath) or "repo"
+    data = {"commits": [], "opened": [], "closed": [], "merged": [],
+            "releases": [], "tags": [], "comments": []}
+    commits = fetch_local_commits(path, mds)
+    data["commits"].extend(tag_repo(commits, label))
+    data["tags"].extend(tag_repo(fetch_local_tags(path, mds), label))
+    born = [c["year"] for c in commits] + [current_year]
+    return assemble_edition(
+        data, label, label, [min(born)], False, mds, week_days,
+        ticket_url, memory, edition_key,
+        record_line="Compiled from the local record",
+        subject={"repos": [label], "local": abspath})
 
 
 def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
@@ -3371,6 +3602,16 @@ def main(argv=None):
                              "badge (default: paper)")
     parser.add_argument("--no-comments", action="store_true",
                         help="Skip the comments section")
+    parser.add_argument("--local", default="",
+                        help="Local mode: build the paper from the git "
+                             "history in PATH (offline, no API calls)")
+    parser.add_argument("--install-hook", action="store_true",
+                        help="Install an opt-in post-commit hook in the "
+                             "--local repo (default: the current "
+                             "directory): every commit presses a fresh "
+                             "paper and prints its link")
+    parser.add_argument("--uninstall-hook", action="store_true",
+                        help="Remove the tdc post-commit hook block")
     parser.add_argument("--share", action="store_true",
                         help="Publish the edition to here.now anonymously "
                              "and print the shareable link (24-hour expiry, "
@@ -3417,9 +3658,23 @@ def main(argv=None):
 
     if args.author and args.repos:
         parser.error("--author cannot be combined with repositories")
-    if not args.author and not args.repos:
+    if args.local and (args.author or args.repos):
+        parser.error("--local cannot be combined with repositories or "
+                     "--author")
+    if args.local and args.platform:
+        parser.error("--local reads the git history directly; "
+                     "--platform does not apply")
+    if args.install_hook or args.uninstall_hook:
+        if not args.local:
+            args.local = "."
+        if args.install_hook:
+            install_hook(args.local)
+        else:
+            uninstall_hook(args.local)
+        return
+    if not args.author and not args.repos and not args.local:
         parser.error("give one or more owner/repo repositories, "
-                     "or --author USER")
+                     "or --author USER, or --local PATH")
     if args.week_url and not args.author:
         parser.error("--week-url needs --author")
     if args.card and args.share:
@@ -3479,6 +3734,9 @@ def main(argv=None):
     key_suffix = ":week" if args.week else ""
     if args.author:
         edition_key = "author:%s:%s%s" % (args.author, mds[0], key_suffix)
+    elif args.local:
+        edition_key = "local:%s:%s%s" % (os.path.abspath(args.local),
+                                         mds[0], key_suffix)
     else:
         edition_key = "repo:%s:%s%s" % (",".join(args.repos), mds[0],
                                         key_suffix)
@@ -3487,6 +3745,13 @@ def main(argv=None):
         edition = gather_author(args.author, mds, week_days,
                                 ticket_url=args.ticket_url,
                                 memory=memory, edition_key=edition_key)
+    elif args.local:
+        try:
+            edition = gather_local(args.local, mds, args.no_comments,
+                                   week_days, ticket_url=args.ticket_url,
+                                   memory=memory, edition_key=edition_key)
+        except RuntimeError as exc:
+            parser.error(str(exc))
     elif args.platform == "bitbucket":
         resolve_bb_auth(args.bitbucket_email, args.bitbucket_token)
         edition = gather_repos(args.repos, mds, args.no_comments,
@@ -3506,8 +3771,12 @@ def main(argv=None):
                                memory=memory, edition_key=edition_key)
 
     if args.card:
-        link = ("github.com/%s" % args.author if args.author
-                else "github.com/%s" % args.repos[0])
+        if args.author:
+            link = "github.com/%s" % args.author
+        elif args.local:
+            link = ""
+        else:
+            link = "github.com/%s" % args.repos[0]
         svg = render_card(edition["label"], md_long, link,
                           edition["counts"], args.card_size,
                           args.card_style)

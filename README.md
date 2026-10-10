@@ -103,6 +103,32 @@ the-daily-commit --author RogueAlg0 --week --out week.html
 In author mode, `--week-url URL` adds a "This week in USER" link to the
 top of the daily edition, pointing at its weekly edition.
 
+### Local mode
+
+Pass `--local PATH` to build the paper from the git history in PATH
+instead of the GitHub API. Fully offline: no network calls, no tokens,
+no rate limits. Issues, pull requests, releases, and comments need a
+forge API, so the local edition covers commits and tags. Every other
+flag keeps working: `--date`, `--week`, `--card`, `--out`,
+`--ticket-url`.
+
+```sh
+the-daily-commit --local ~/code/my-project --out today.html
+```
+
+`--install-hook` drops an opt-in post-commit hook into the repo (the
+`--local` repo, or the current directory). Every commit then presses a
+fresh paper to `~/.tdc/<repo>/today.html` and prints its link. It never
+overwrites an existing hook: when one is already there, tdc prints the
+block for you to merge by hand. `--uninstall-hook` removes it again.
+
+```sh
+cd ~/code/my-project
+the-daily-commit --install-hook
+git commit -m "Ship it"
+# Fresh paper pressed: file:///home/you/.tdc/my-project/today.html
+```
+
 ### Cards and badges
 
 `--card` emits a standalone SVG card instead of the HTML page, for

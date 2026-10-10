@@ -70,7 +70,6 @@
   var start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   var end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
   var since = start.toISOString(), until = end.toISOString();
-  var todayStr = start.toISOString().slice(0, 10);
   document.getElementById("dateline").textContent =
     "Live edition for " + start.toLocaleDateString(undefined,
       { weekday: "long", year: "numeric", month: "long", day: "numeric" });
@@ -85,7 +84,10 @@
     return s.length > 140 ? s.slice(0, 137) + "..." : s;
   }
   function onDay(iso) {
-    return typeof iso === "string" && iso.slice(0, 10) === todayStr;
+    // ISO 8601 Z timestamps sort lexicographically, so compare against
+    // the viewer's local-day range directly. (Comparing calendar dates
+    // dropped part of the day for non-UTC viewers.)
+    return typeof iso === "string" && iso >= since && iso < until;
   }
 
   function get(path) {

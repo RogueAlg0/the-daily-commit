@@ -2256,9 +2256,11 @@ def new_voices_box(voices, seed=""):
     parts = ['<div class="postit-stack">']
     for v in voices[:5]:
         login = v["byline"]
-        url = v.get("author_url") or ("https://github.com/" + login)
+        url = v.get("author_url") or ""
+        name = ('<a href="%s">%s</a>' % (esc(url), esc(login))
+                if url else esc(login))
         tilt = rng.uniform(-3, 3)
-        msg = rng.choice(messages) % ('<a href="%s">%s</a>' % (esc(url), esc(login)))
+        msg = rng.choice(messages) % name
         parts.append(
             '<div class="postit" style="transform: rotate(%.1fdeg)">%s</div>'
             % (tilt, msg))
@@ -2524,14 +2526,51 @@ def find_merges(commits):
     return found
 
 
-def find_new_voices(commits):
+def api_new_voice_verify(item, debut_day):
+    """True when the author's first repo commit is not before debut_day.
+
+    debut_day is YYYY-MM-DD. One API call: any commit by the author
+    before the debut day means they are not a new voice. Fail closed:
+    anything unverifiable is not celebrated.
+    """
+    repo = item.get("repo", "")
+    login = item.get("login", "")
+    if not repo or not login or "/" not in repo:
+        return False
+    try:
+        params = {"author": login, "until": debut_day + "T00:00:00Z",
+                  "per_page": 1}
+        return not api_paged("/repos/%s/commits" % repo, params, 1)
+    except Exception:
+        return False
+
+
+def local_author_is_new(path, byline, debut_day):
+    """True when byline has no local commit before debut_day (YYYY-MM-DD)."""
+    if not byline or byline == "unknown":
+        return False
+    try:
+        out = git_run(path, "log", "--all", "--format=%an%x1f%cI")
+    except RuntimeError:
+        return False
+    for line in out.splitlines():
+        name, _, stamp = line.partition("\x1f")
+        if name == byline and len(stamp) >= 10 and stamp[:10] < debut_day:
+            return False
+    return True
+
+
+def find_new_voices(commits, verify):
     """First-time contributors appearing in the paper.
 
-    An author whose earliest commit in the fetched history is from
-    the most recent year is a new voice: they weren't in the paper
-    in prior years. Celebrate them.
+    An author is new when their first-ever repo commit is in this
+    paper and from the most recent year. The verify callable checks
+    the full history: verify(first_item, debut_day) must be True,
+    where debut_day is YYYY-MM-DD. Judging by the fetched slice
+    alone misfires on young repos, where every commit ever is "from
+    the most recent year".
     """
-    if not commits:
+    if not commits or verify is None:
         return []
     by_author = {}
     for item in commits:
@@ -2541,20 +2580,26 @@ def find_new_voices(commits):
         by_author.setdefault(login, []).append(item)
     max_year = max(i["year"] for i in commits)
     voices = []
-    for login, items in by_author.items():
-        earliest = min(i["year"] for i in items)
-        if earliest == max_year and len(items) <= 3:
-            # First appearance, and not too many (not a regular).
-            first = min(items, key=lambda i: i["year"])
-            voices.append({
-                "year": first["year"],
-                "headline": "Welcome, %s!" % login,
-                "byline": login,
-                "body": "First appearance in the paper with: %s" %
-                        first["headline"][:60],
-                "url": first["url"],
-                "author_url": profile_url(login),
-            })
+    for login, items in list(by_author.items())[:10]:
+        first = min(items, key=lambda i: (i["year"], i["day"]))
+        if first["year"] != max_year:
+            continue
+        debut_day = "%d-%s" % (first["year"], first["day"])
+        try:
+            is_new = verify(first, debut_day)
+        except Exception:
+            is_new = False
+        if not is_new:
+            continue
+        voices.append({
+            "year": first["year"],
+            "headline": "Welcome, %s!" % login,
+            "byline": login,
+            "body": "First appearance in the paper with: %s" %
+                    first["headline"][:60],
+            "url": first["url"],
+            "author_url": profile_url(login),
+        })
     return voices
 
 
@@ -3239,12 +3284,13 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
             item["byline"] = "%s · %s" % (item["byline"], item["repo"])
     return assemble_edition(data, title, label, created, private, mds,
                             week_days, ticket_url, memory, edition_key,
-                            subject={"repos": repos})
+                            subject={"repos": repos},
+                            new_voice_verify=api_new_voice_verify)
 
 
 def assemble_edition(data, title, label, created, private, mds, week_days,
                      ticket_url, memory, edition_key, record_line=None,
-                     subject=None):
+                     subject=None, new_voice_verify=None):
     """Shared edition assembly for API, local, and multi-repo gathers.
 
     Everything downstream of the fetch step: curation, charm sections,
@@ -3283,7 +3329,7 @@ def assemble_edition(data, title, label, created, private, mds, week_days,
     # Quips go in the Overheard sidebar, not as full articles.
     serious = [d for d in drama if d.get("quip_type") != "quip"]
     quip_items = [d for d in drama if d.get("quip_type") == "quip"]
-    voices = find_new_voices(data["commits"])
+    voices = find_new_voices(data["commits"], new_voice_verify)
     seed = "%s-%s" % (mds[0] if mds else "", span)
     # Charm sections
     weather_text = repo_weather(data["commits"], merges, data["opened"])
@@ -3379,7 +3425,9 @@ def gather_local(path, mds, no_comments, week_days=(), ticket_url="",
         data, label, label, [min(born)], False, mds, week_days,
         ticket_url, memory, edition_key,
         record_line="Compiled from the local record",
-        subject={"repos": [label], "local": abspath})
+        subject={"repos": [label], "local": abspath},
+        new_voice_verify=lambda item, day: local_author_is_new(
+            abspath, item.get("byline", ""), day))
 
 
 def gather_author(user, mds, week_days=(), ticket_url="", memory=None,

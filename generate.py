@@ -3288,35 +3288,43 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
                             new_voice_verify=api_new_voice_verify)
 
 
-def derby_box(commits):
-    """The Daily Derby: contributors ranked by commit count.
+def derby_box(commits, by="login"):
+    """The Daily Derby: a commit-count race card.
 
-    A little race card for the edition's committers. Counts commits
-    per author, ranks the top five, and draws each a bar sized to
-    the leader. Needs at least two runners: a one-horse race is no
-    race at all. Placement is random: it rides the charm scatter
-    with the other charm boxes.
+    Counts commits per runner, ranks the top five, and draws each
+    a bar sized to the leader. With by="login" (the default) the
+    runners are contributors; with by="repo" they are
+    repositories, parsed from "user · owner/repo" bylines for
+    the author paper. Needs at least two runners: a one-horse
+    race is no race at all. Placement is random: it rides the
+    charm scatter with the other charm boxes.
     """
     counts = {}
     urls = {}
     for item in commits:
-        login = item.get("login") or item.get("byline", "")
-        if not login or login == "unknown":
+        if by == "repo":
+            bits = item.get("byline", "").split(" · ", 1)
+            key = bits[1].strip() if len(bits) == 2 else ""
+            url = "https://github.com/" + key if "/" in key else ""
+        else:
+            key = item.get("login") or item.get("byline", "")
+            url = item.get("author_url") or ""
+        if not key or key == "unknown":
             continue
-        counts[login] = counts.get(login, 0) + 1
-        if item.get("author_url"):
-            urls[login] = item["author_url"]
+        counts[key] = counts.get(key, 0) + 1
+        if url:
+            urls[key] = url
     if len(counts) < 2:
         return ""
     ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
     top = ranked[0][1]
     places = ("1st", "2nd", "3rd", "4th", "5th")
     parts = ['<div class="charm-box charm-derby">', "<h4>The Daily Derby</h4>"]
-    for (login, n), place in zip(ranked, places):
+    for (key, n), place in zip(ranked, places):
         width = max(6, int(100 * n / top))
-        name = esc(login)
-        if urls.get(login):
-            name = '<a href="%s">%s</a>' % (esc(urls[login]), esc(login))
+        name = esc(key)
+        if urls.get(key):
+            name = '<a href="%s">%s</a>' % (esc(urls[key]), esc(key))
         parts.append(
             '<div class="derby-row">'
             '<span class="derby-place">%s</span>'
@@ -3561,6 +3569,7 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
         charm_box("Letters to the Editor", letters, style="letter"),
         charm_box("Missed Connections", missed, style="missed"),
         charm_box("Classifieds", ads, style="classified"),
+        derby_box(commits, by="repo"),
     ]
     if week_days:
         pairs = [("commit", "commits", commits),

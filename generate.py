@@ -3288,6 +3288,48 @@ def gather_repos(repos, mds, no_comments, week_days=(), ticket_url="",
                             new_voice_verify=api_new_voice_verify)
 
 
+def derby_box(commits):
+    """The Daily Derby: contributors ranked by commit count.
+
+    A little race card for the edition's committers. Counts commits
+    per author, ranks the top five, and draws each a bar sized to
+    the leader. Needs at least two runners: a one-horse race is no
+    race at all. Placement is random: it rides the charm scatter
+    with the other charm boxes.
+    """
+    counts = {}
+    urls = {}
+    for item in commits:
+        login = item.get("login") or item.get("byline", "")
+        if not login or login == "unknown":
+            continue
+        counts[login] = counts.get(login, 0) + 1
+        if item.get("author_url"):
+            urls[login] = item["author_url"]
+    if len(counts) < 2:
+        return ""
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:5]
+    top = ranked[0][1]
+    places = ("1st", "2nd", "3rd", "4th", "5th")
+    parts = ['<div class="charm-box charm-derby">', "<h4>The Daily Derby</h4>"]
+    for (login, n), place in zip(ranked, places):
+        width = max(6, int(100 * n / top))
+        name = esc(login)
+        if urls.get(login):
+            name = '<a href="%s">%s</a>' % (esc(urls[login]), esc(login))
+        parts.append(
+            '<div class="derby-row">'
+            '<span class="derby-place">%s</span>'
+            '<span class="derby-runner">%s</span>'
+            '<span class="derby-track">'
+            '<span class="derby-bar" style="width:%d%%"></span>'
+            "</span>"
+            '<span class="derby-count">%d commit%s</span>'
+            "</div>" % (place, name, width, n, "" if n == 1 else "s"))
+    parts.append("</div>")
+    return "\n".join(parts)
+
+
 def assemble_edition(data, title, label, created, private, mds, week_days,
                      ticket_url, memory, edition_key, record_line=None,
                      subject=None, new_voice_verify=None):
@@ -3359,6 +3401,7 @@ def assemble_edition(data, title, label, created, private, mds, week_days,
         charm_box("Letters to the Editor", letters, style="letter"),
         charm_box("Missed Connections", missed, style="missed"),
         charm_box("Classifieds", ads, style="classified"),
+        derby_box(data["commits"]),
     ]
     if week_days:
         pairs = [("commit", "commits", data["commits"]),

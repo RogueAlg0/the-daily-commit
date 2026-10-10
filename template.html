@@ -375,6 +375,47 @@
     padding-bottom: 0.5rem;
     border-bottom: 1px dotted var(--faint);
   }
+  /* Derby: like a race card */
+  .charm-derby {
+    border: 2px solid var(--ink);
+  }
+  .charm-derby h4::before {
+    content: "🏇 ";
+  }
+  .charm-derby .derby-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+  }
+  .charm-derby .derby-place {
+    font-style: italic;
+    min-width: 28px;
+  }
+  .charm-derby .derby-runner {
+    min-width: 70px;
+    max-width: 38%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: bold;
+  }
+  .charm-derby .derby-track {
+    flex: 1;
+    height: 12px;
+    border: 1px solid var(--ink);
+    padding: 1px;
+  }
+  .charm-derby .derby-bar {
+    display: block;
+    height: 100%;
+    background: var(--ink);
+  }
+  .charm-derby .derby-count {
+    font-size: 0.8rem;
+    font-style: italic;
+    white-space: nowrap;
+  }
   article h3 {
     font-size: 1rem;
     margin: 0 0 0.15rem;

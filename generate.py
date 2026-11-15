@@ -3915,8 +3915,8 @@ def main(argv=None):
                                                edition["counts"],
                                                edition["years"],
                                                week=args.week)))
-            .replace("{{BODY}}", body)
-            .replace("{{XKCD}}", xkcd_link()))
+            .replace("{{XKCD}}", xkcd_link())
+            .replace("{{BODY}}", body))
 
     out_path = args.out
     if args.share and not out_path:

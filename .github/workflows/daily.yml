@@ -5,9 +5,17 @@ on:
     - cron: "0 1 * * *"
   workflow_dispatch:
 
+# Serialize Pages deployments so a manual dispatch can never race the
+# scheduled run into two overlapping deployments.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
 jobs:
   site:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
     permissions:
       contents: read
       pages: write
@@ -24,4 +32,28 @@ jobs:
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-      - uses: actions/deploy-pages@v4
+      # deploy-pages can fail within a second of a successful upload with
+      # "Found 0 artifact(s)": its artifact metadata read races the upload
+      # finalizing on GitHub's side. The artifact itself is fine (the run
+      # that passed on 2026-11-22 used the same commit), so retry the
+      # deploy with backoff instead of failing the whole run. Attempts 1
+      # and 2 use continue-on-error so a retry can still save the run;
+      # attempt 3 has none, so a real deploy failure still fails the job.
+      - name: Deploy to GitHub Pages (attempt 1)
+        id: deployment
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Wait before the second deploy attempt
+        if: steps.deployment.outcome == 'failure'
+        run: sleep 60
+      - name: Deploy to GitHub Pages (attempt 2)
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
+        continue-on-error: true
+        uses: actions/deploy-pages@v4
+      - name: Wait before the final deploy attempt
+        if: steps.deployment_retry.outcome == 'failure'
+        run: sleep 180
+      - name: Deploy to GitHub Pages (attempt 3)
+        if: steps.deployment_retry.outcome == 'failure'
+        uses: actions/deploy-pages@v4

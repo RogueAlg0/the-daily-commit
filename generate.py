@@ -3349,10 +3349,17 @@ def assemble_edition(data, title, label, created, private, mds, week_days,
     current_year = dt.datetime.now().year
     years = list(range(min(created), current_year + 1))[-MAX_YEARS:]
     span = "%d-%d" % (years[0], years[-1]) if len(years) > 1 else str(years[0])
+    # Seed span from the years the data actually covers, not the wall
+    # clock: the old span ended at the current year, so every January
+    # changed the seed and reshuffled the curation for the same data.
+    seed_years = sorted({i["year"] for items in data.values()
+                         for i in items if i.get("year")}) or years
+    seed_span = ("%d-%d" % (seed_years[0], seed_years[-1])
+                 if len(seed_years) > 1 else str(seed_years[0]))
     counts = {key: len(items) for key, items in data.items()}
     # Newspaper-style curation: many quip types, but only a few make
     # the edition. Seeded by date for consistency.
-    seed = "%s-%s" % (mds[0] if mds else "", span)
+    seed = "%s-%s" % (mds[0] if mds else "", seed_span)
     candidates = find_quips(data["commits"])
     candidates["revert"] = find_reverts(data["commits"])
     quote = find_quote(data["commits"], data["comments"])
@@ -3380,7 +3387,7 @@ def assemble_edition(data, title, label, created, private, mds, week_days,
     serious = [d for d in drama if d.get("quip_type") != "quip"]
     quip_items = [d for d in drama if d.get("quip_type") == "quip"]
     voices = find_new_voices(data["commits"], new_voice_verify)
-    seed = "%s-%s" % (mds[0] if mds else "", span)
+    seed = "%s-%s" % (mds[0] if mds else "", seed_span)
     # Charm sections
     weather_text = repo_weather(data["commits"], merges, data["opened"])
     marriages = marriage_announcements(merges, seed=seed)
@@ -3517,7 +3524,12 @@ def gather_author(user, mds, week_days=(), ticket_url="", memory=None,
     counts = {"commits": len(commits), "opened": len(opened),
               "prs_opened": len(prs_opened), "merged": len(merged),
               "closed": len(closed), "comments": len(comments)}
-    seed = "%s-%s" % (mds[0] if mds else "", span)
+    seed_years = sorted({i["year"] for i in
+                         commits + opened + prs_opened + merged + closed + comments
+                         if i.get("year")}) or years
+    seed_span = ("%d-%d" % (seed_years[0], seed_years[-1])
+                 if len(seed_years) > 1 else str(seed_years[0]))
+    seed = "%s-%s" % (mds[0] if mds else "", seed_span)
     candidates = find_quips(commits)
     candidates["revert"] = find_reverts(commits)
     quote = find_quote(commits, comments)

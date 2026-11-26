@@ -1160,9 +1160,11 @@ def bb_fetch_commits(workspace, repo, mds, years):
     """Commits whose date falls on the month-days, via Bitbucket.
 
     The commits endpoint lists newest-first with no server-side date
-    filter, so the client filters by month-day and stops paging once
-    commits are older than the oldest needed year. Normalized dicts
-    match the GitHub fetch_commits shape.
+    filter, so the client filters by month-day and year. Old commits
+    are skipped, not a stop: the listing is not strictly
+    date-ordered, so stopping at the first old commit would drop
+    newer commits listed after it. Normalized dicts match the GitHub
+    fetch_commits shape.
     """
     mds = set(mds)
     found = []
@@ -1172,7 +1174,7 @@ def bb_fetch_commits(workspace, repo, mds, years):
         stamp = bb_stamp(entry.get("date", ""))
         year = year_of(stamp) if stamp else 0
         if year and year < oldest:
-            break
+            continue
         day = month_day(stamp)
         if day not in mds:
             continue
@@ -1601,9 +1603,11 @@ def gl_fetch_commits(namespace, slug, mds, years):
     """Commits whose date falls on the month-days, via GitLab.
 
     The commits endpoint lists newest-first with no server-side date
-    filter, so the client filters by month-day and stops paging once
-    commits are older than the oldest needed year. Normalized dicts
-    match the GitHub fetch_commits shape.
+    filter, so the client filters by month-day and year. Old commits
+    are skipped, not a stop: the listing is not strictly
+    date-ordered, so stopping at the first old commit would drop
+    newer commits listed after it. Normalized dicts match the GitHub
+    fetch_commits shape.
     """
     mds = set(mds)
     found = []
@@ -1614,7 +1618,7 @@ def gl_fetch_commits(namespace, slug, mds, years):
         stamp = gl_stamp(entry.get("committed_date", ""))
         year = year_of(stamp) if stamp else 0
         if year and year < oldest:
-            break
+            continue
         day = month_day(stamp)
         if day not in mds:
             continue
